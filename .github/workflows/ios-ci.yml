@@ -1,0 +1,59 @@
+name: iOS CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect available Xcode
+        run: |
+          mkdir -p artifacts
+          xcode-select -p | tee artifacts/xcode-path.txt
+          xcodebuild -version | tee artifacts/xcode-version.txt
+          xcrun simctl list runtimes | tee artifacts/runtimes.txt
+      - name: Select and boot an available iPhone
+        run: |
+          SIMULATOR_ID=$(python3 scripts/select_simulator.py)
+          echo "SIMULATOR_ID=$SIMULATOR_ID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$SIMULATOR_ID" || test "$(xcrun simctl list devices booted -j | python3 -c 'import json,sys; print(any(d["udid"] == sys.argv[1] for ds in json.load(sys.stdin)["devices"].values() for d in ds))' "$SIMULATOR_ID")" = True
+          xcrun simctl bootstatus "$SIMULATOR_ID" -b
+      - name: Resolve dependencies
+        run: |
+          set -o pipefail
+          xcodebuild -resolvePackageDependencies -project LittleMoments.xcodeproj -scheme LittleMoments CODE_SIGNING_ALLOWED=NO 2>&1 | tee artifacts/dependencies.log
+      - name: Compile application and tests
+        run: |
+          set -o pipefail
+          xcodebuild build-for-testing -project LittleMoments.xcodeproj -scheme LittleMoments -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO 2>&1 | tee artifacts/build.log
+      - name: Run all unit and UI tests
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building -project LittleMoments.xcodeproj -scheme LittleMoments -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -derivedDataPath build/DerivedData -resultBundlePath artifacts/LittleMoments.xcresult -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO 2>&1 | tee artifacts/tests.log
+      - name: Preserve simulator diagnostics and screenshots
+        if: always()
+        run: |
+          if [ -n "$SIMULATOR_ID" ]; then
+            xcrun simctl io "$SIMULATOR_ID" screenshot artifacts/final-screen.png || true
+            xcrun simctl spawn "$SIMULATOR_ID" log show --last 15m --style compact --predicate 'process == "LittleMoments"' > artifacts/simulator.log 2>&1 || true
+          fi
+          if [ -d artifacts/LittleMoments.xcresult ]; then
+            xcrun xcresulttool export attachments --path artifacts/LittleMoments.xcresult --output-path artifacts/attachments || true
+          fi
+      - name: Upload test results and diagnostics
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-results-${{ github.run_attempt }}
+          path: artifacts/
+          retention-days: 14
+          if-no-files-found: warn
