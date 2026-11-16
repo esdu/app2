@@ -21,6 +21,10 @@ jobs:
           xcode-select -p | tee artifacts/xcode-path.txt
           xcodebuild -version | tee artifacts/xcode-version.txt
           xcrun simctl list runtimes | tee artifacts/runtimes.txt
+      - name: Validate source privacy declaration
+        run: |
+          set -o pipefail
+          python3 scripts/validate_privacy_manifest.py 2>&1 | tee artifacts/privacy-source.log
       - name: Select and boot an available iPhone
         run: |
           SIMULATOR_ID=$(python3 scripts/select_simulator.py)
@@ -35,10 +39,20 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild build-for-testing -project LittleMoments.xcodeproj -scheme LittleMoments -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -derivedDataPath build/DerivedData -resultBundlePath artifacts/Build.xcresult CODE_SIGNING_ALLOWED=NO 2>&1 | tee artifacts/build.log
+      - name: Validate built app privacy manifest
+        run: |
+          set -o pipefail
+          python3 scripts/validate_privacy_manifest.py build/DerivedData/Build/Products/Debug-iphonesimulator/LittleMoments.app/PrivacyInfo.xcprivacy 2>&1 | tee artifacts/privacy-simulator.log
       - name: Run all unit and UI tests
         run: |
           set -o pipefail
           xcodebuild test-without-building -project LittleMoments.xcodeproj -scheme LittleMoments -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -derivedDataPath build/DerivedData -resultBundlePath artifacts/LittleMoments.xcresult -parallel-testing-enabled NO -test-timeouts-enabled YES -default-test-execution-time-allowance 120 -maximum-test-execution-time-allowance 180 CODE_SIGNING_ALLOWED=NO 2>&1 | tee artifacts/tests.log
+      - name: Archive unsigned iOS app and validate its privacy manifest
+        run: |
+          set -o pipefail
+          xcodebuild archive -project LittleMoments.xcodeproj -scheme LittleMoments -configuration Release -destination 'generic/platform=iOS' -archivePath build/LittleMoments.xcarchive -derivedDataPath build/ArchiveDerivedData -resultBundlePath artifacts/Archive.xcresult CODE_SIGNING_ALLOWED=NO 2>&1 | tee artifacts/archive.log
+          python3 scripts/validate_privacy_manifest.py build/LittleMoments.xcarchive/Products/Applications/LittleMoments.app/PrivacyInfo.xcprivacy 2>&1 | tee artifacts/privacy-archive.log
+          cp build/LittleMoments.xcarchive/Products/Applications/LittleMoments.app/PrivacyInfo.xcprivacy artifacts/Archived-PrivacyInfo.xcprivacy
       - name: Preserve simulator diagnostics and screenshots
         if: always()
         run: |
