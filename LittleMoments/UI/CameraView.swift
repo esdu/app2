@@ -52,10 +52,10 @@ struct CameraView: View {
                     }.frame(height: 330).accessibilityElement(children: .contain)
                     VStack(alignment: .leading, spacing: 10) {
                         HStack { Text("Keep the last").font(.subheadline.weight(.medium)); Spacer(); Text("\(Int(model.duration)) seconds").foregroundStyle(accent) }
-                        Picker("Buffer duration", selection: $model.duration) {
-                            ForEach([15.0, 30, 60, 120], id: \.self) { duration in Text("\(Int(duration))s").tag(duration) }
+                        Picker("Buffer duration", selection: Binding(get: { model.duration }, set: model.setDuration)) {
+                            ForEach(CameraPreferences.supportedDurations, id: \.self) { duration in Text("\(Int(duration))s").tag(duration) }
                         }.pickerStyle(.segmented).accessibilityIdentifier("durationPicker")
-                            .disabled(model.phase == .buffering || model.transitioning)
+                            .disabled(!model.canChangePreferences)
                     }
                     Button { model.save() } label: {
                         HStack(spacing: 12) {
@@ -67,10 +67,10 @@ struct CameraView: View {
                         .disabled(model.phase != .buffering || model.seconds <= 0 || model.saving)
                         .accessibilityIdentifier("saveButton").accessibilityHint("Saves the most recent buffer to your local clip library")
                     HStack(spacing: 16) {
-                        Toggle(isOn: $model.audio) { Image(systemName: model.audio ? "mic" : "mic.slash") }
+                        Toggle(isOn: Binding(get: { model.audio }, set: model.setAudio)) { Image(systemName: model.audio ? "mic" : "mic.slash") }
                             .toggleStyle(.button).frame(width: 48, height: 48)
-                            .accessibilityLabel("Record audio").accessibilityIdentifier("audioToggle")
-                            .disabled(model.phase == .buffering || model.transitioning)
+                            .accessibilityLabel("Record audio").accessibilityValue(model.audio ? "On" : "Off").accessibilityIdentifier("audioToggle")
+                            .disabled(!model.canChangePreferences)
                         Button(model.phase == .buffering ? "Stop Buffer" : "Start Buffer") {
                             if model.phase == .buffering { model.stop() } else { model.start() }
                         }.font(.headline).frame(maxWidth: .infinity, minHeight: 52)
@@ -78,8 +78,9 @@ struct CameraView: View {
                             .accessibilityIdentifier("bufferButton")
                         Button { model.switchCamera() } label: {
                             Image(systemName: "arrow.triangle.2.circlepath.camera").font(.title2).frame(width: 48, height: 48)
-                        }.disabled(model.phase == .buffering || model.transitioning)
+                        }.disabled(!model.canChangePreferences)
                             .accessibilityLabel("Switch camera").accessibilityValue(model.front ? "Front" : "Rear")
+                            .accessibilityIdentifier("switchCameraButton")
                     }
                     if model.phase == .denied {
                         Button("Open Settings") { if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) } }

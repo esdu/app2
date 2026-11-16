@@ -2,9 +2,10 @@ import AVFoundation
 import SwiftUI
 
 @MainActor final class CameraModel: ObservableObject {
-    @Published var duration = 30.0
-    @Published var audio = true
-    @Published private(set) var front = false
+    @Published private(set) var preferences: CameraPreferences
+    var duration: Double { preferences.duration }
+    var audio: Bool { preferences.audio }
+    var front: Bool { preferences.camera == .front }
     @Published private(set) var phase: CapturePhase = .stopped
     @Published private(set) var seconds = 0.0
     @Published private(set) var bytes: Int64 = 0
@@ -17,9 +18,18 @@ import SwiftUI
     private var foreground = true
     private var operation = UUID()
     private var transitionCount = 0
+    private let preferencesStore: CameraPreferencesStore
 
-    init(camera: CameraService, library: ClipLibrary, testing: Bool = false) {
+    init(camera: CameraService, library: ClipLibrary, testing: Bool = false,
+         preferencesStore: CameraPreferencesStore = MemoryCameraPreferencesStore()) {
+        self.preferencesStore = preferencesStore
+        var initialPreferences = CameraPreferences.defaults
+        var preferencesError: String?
+        do { initialPreferences = try preferencesStore.load().validated() }
+        catch { preferencesError = "Your preferences could not be loaded. Default settings are selected." }
+        self.preferences = initialPreferences
         self.camera = camera; self.library = library; self.testing = testing
+        message = preferencesError
         camera.onStatistics = { [weak self] statistics in Task { @MainActor in
             self?.seconds = statistics.seconds; self?.bytes = statistics.bytes
         } }
@@ -58,7 +68,23 @@ import SwiftUI
         foreground = active
         if !active { stop(paused: phase == .buffering || phase == .starting || phase == .paused) }
     }
-    func switchCamera() { guard phase != .buffering, !transitioning else { return }; front.toggle() }
+    var canChangePreferences: Bool { phase != .buffering && phase != .starting && !transitioning }
+    func updatePreferences(_ edit: (inout CameraPreferences) -> Void) {
+        guard canChangePreferences else { return }
+        var updated = preferences
+        edit(&updated)
+        updated = updated.validated()
+        guard updated != preferences else { return }
+        preferences = updated
+        do { try preferencesStore.save(updated) }
+        catch { message = "Your preferences could not be saved. They will apply until the app closes." }
+    }
+    func setDuration(_ duration: Double) {
+        guard CameraPreferences.supportedDurations.contains(duration) else { return }
+        updatePreferences { $0.duration = duration }
+    }
+    func setAudio(_ audio: Bool) { updatePreferences { $0.audio = audio } }
+    func switchCamera() { updatePreferences { $0.camera = $0.camera == .front ? .rear : .front } }
     func save() {
         guard !saving, phase == .buffering else { return }
         saving = true
