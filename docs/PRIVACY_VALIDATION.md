@@ -37,3 +37,9 @@ GitHub Actions checks the source manifest, the compiled simulator app, and this 
 ## Before distribution
 
 Generate a privacy report and validate the final **signed** distribution archive in Xcode Organizer using the intended Apple Developer team. Confirm the archived app includes all three declarations above and review any additional API usage introduced by future changes or dependencies. A successful unsigned archive and simulator CI do not perform App Store Connect's distribution validation. No signed validation or App Store submission has been performed in this workspace.
+
+## Verified fix
+
+[CI run 43955515633](https://github.com/esdu/app2/actions/runs/43955515633) passed on code commit `87bf16a26f6bcd5afea83464e036499eae8da447`: source validation, simulator app packaging, all 28 unit/integration and 5 UI tests, and unsigned generic-device Release archiving. The manifest inside the archived app matched the source and declared System Boot Time reason `35F9.1`. The downloaded artifact's archived manifest was also parsed and checked directly.
+
+[Validation artifacts](https://github.com/esdu/app2/actions/runs/43955515633/artifacts/14272258787) include the archived manifest and all three privacy-check logs. Local validation rejected the original manifest, confirming the regression check catches the issue. Signed App Store distribution validation remains a separate pre-release step.
