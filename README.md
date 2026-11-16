@@ -2,6 +2,8 @@
 
 [![iOS CI](https://github.com/esdu/app2/actions/workflows/ios-ci.yml/badge.svg)](https://github.com/esdu/app2/actions/workflows/ios-ci.yml)
 
+Verified simulator build: **28 unit/integration tests and 5 UI tests passed**, zero failures. [Successful run and artifacts](https://github.com/esdu/app2/actions/runs/43925110201) · [Validation details](docs/VALIDATION.md). Physical iPhone testing remains outstanding.
+
 A local-first iPhone camera for keeping the moment just before you tap **SAVE MOMENT**. Requires iOS 17+. Start a short rolling buffer, stay present, and save a spontaneous moment to a private local clip library.
 
 **Foreground only.** Locking the phone, leaving the app, interruptions, or opening the clip library stops capture. Return and explicitly tap **Start Buffer** to restart. This app is not a baby monitor or a substitute for direct parental supervision.
