@@ -28,6 +28,7 @@ for configuration in ['Debug','Release']:
     settings = dict(base, SWIFT_OPTIMIZATION_LEVEL='-Onone' if configuration=='Debug' else '-O',
         DEBUG_INFORMATION_FORMAT='dwarf' if configuration=='Debug' else 'dwarf-with-dsym',
         ENABLE_TESTABILITY='YES' if configuration=='Debug' else 'NO',
+        ONLY_ACTIVE_ARCH='YES' if configuration=='Debug' else 'NO',
         SWIFT_ACTIVE_COMPILATION_CONDITIONS='DEBUG' if configuration=='Debug' else '',
         GCC_PREPROCESSOR_DEFINITIONS=['DEBUG=1','$(inherited)'] if configuration=='Debug' else ['$(inherited)'])
     configs.append(add('project:'+configuration, 'XCBuildConfiguration', name=configuration, buildSettings=settings))
