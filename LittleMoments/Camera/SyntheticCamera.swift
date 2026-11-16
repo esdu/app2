@@ -2,7 +2,8 @@
 import AVFoundation
 
 /// Opt-in only through --uitesting in DEBUG builds. Never selected for normal launches.
-final class SyntheticCamera: CameraService {
+// Mutable fixture/timer state is used only by MainActor-isolated async methods.
+final class SyntheticCamera: CameraService, @unchecked Sendable {
     var session: AVCaptureSession? { nil }
     var onStatistics: ((CameraStatistics) -> Void)?
     var onInterruption: ((String) -> Void)?

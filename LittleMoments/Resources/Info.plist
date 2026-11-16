@@ -1,20 +1,47 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleDevelopmentRegion</key><string>en</string>
-<key>CFBundleDisplayName</key><string>Little Moments</string>
-<key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
-<key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-<key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
-<key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
-<key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
-<key>LSRequiresIPhoneOS</key><true/>
-<key>NSCameraUsageDescription</key><string>Little Moments uses the camera to keep a short video buffer after you tap Start Buffer.</string>
-<key>NSMicrophoneUsageDescription</key><string>Include sound in your moments when Record Audio is enabled.</string>
-<key>NSPhotoLibraryAddUsageDescription</key><string>Save a clip to Photos only when you choose Export to Photos.</string>
-<key>UILaunchScreen</key><dict/>
-<key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
-<key>UIRequiresFullScreen</key><true/>
-</dict></plist>
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Little Moments</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Little Moments uses the camera to keep a short video buffer after you tap Start Buffer.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Include sound in your moments when Record Audio is enabled.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save a clip to Photos only when you choose Export to Photos.</string>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>UIRequiresFullScreen</key>
+	<true/>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+		<key>UISceneConfigurations</key>
+		<dict/>
+	</dict>
+</dict>
+</plist>

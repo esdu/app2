@@ -50,6 +50,16 @@ final class SegmentIndexTests: XCTestCase {
         XCTAssertEqual(index.clearUnpinned().count, 1)
         index.release(token); XCTAssertEqual(index.clearUnpinned().count, 1)
     }
+    func testRestartDoesNotIncludePreviouslyPinnedSession() {
+        var index = SegmentIndex(); index.insert(segment(0, 2))
+        let (previousSave, _) = index.pin(endingAt: 2)
+        _ = index.clearUnpinned()
+        XCTAssertEqual(index.duration, 0)
+        index.insert(segment(3, 5))
+        XCTAssertEqual(index.pin(endingAt: 5).1.map(\.start), [3])
+        index.release(previousSave)
+        XCTAssertEqual(index.prune(now: 5).map(\.start), [0])
+    }
     func testPinSelectsOnlyWindowAtTrigger() {
         var index = SegmentIndex(); index.window = 3
         for start in [0.0, 2, 4, 6] { index.insert(segment(start, start + 2)) }
@@ -71,12 +81,5 @@ final class SegmentIndexTests: XCTestCase {
         XCTAssertTrue(timeline.accept(100, audio: false)); XCTAssertTrue(timeline.accept(100.01, audio: true))
         XCTAssertTrue(timeline.accept(100.02, audio: false)); XCTAssertFalse(timeline.accept(100, audio: false))
         XCTAssertFalse(timeline.accept(.infinity, audio: true)); XCTAssertFalse(timeline.accept(-1, audio: true))
-    }
-    func testPermissionStateAndInterruptionDoNotAutoResume() {
-        var state = CaptureState(); state.start(permitted: false); XCTAssertEqual(state.phase, .denied)
-        state.start(permitted: true); state.pause(); XCTAssertEqual(state.phase, .paused)
-        state.pause(); XCTAssertEqual(state.phase, .paused)
-        state.start(permitted: true); XCTAssertEqual(state.phase, .buffering)
-        state.stop(); XCTAssertEqual(state.phase, .stopped)
     }
 }

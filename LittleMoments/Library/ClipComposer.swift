@@ -17,12 +17,12 @@ struct ClipComposer {
             guard length > 0 else { continue }
             let desired = CMTimeRange(start: CMTime(seconds: localStart, preferredTimescale: 60_000),
                                       duration: CMTime(seconds: length, preferredTimescale: 60_000))
-            let range = CMTimeRangeGetIntersection(desired, videoRange)
+            let range = CMTimeRangeGetIntersection(desired, otherRange: videoRange)
             guard range.duration.isNumeric, range.duration > .zero else { continue }
             try video.insertTimeRange(range, of: sourceVideo, at: cursor)
             video.preferredTransform = try await sourceVideo.load(.preferredTransform)
             if let sourceAudio = try await asset.loadTracks(withMediaType: .audio).first {
-                let audioRange = CMTimeRangeGetIntersection(range, try await sourceAudio.load(.timeRange))
+                let audioRange = CMTimeRangeGetIntersection(range, otherRange: try await sourceAudio.load(.timeRange))
                 if audioRange.duration.isNumeric, audioRange.duration > .zero {
                     try audio.insertTimeRange(audioRange, of: sourceAudio, at: cursor + audioRange.start - range.start)
                 }

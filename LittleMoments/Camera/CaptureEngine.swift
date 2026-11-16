@@ -1,8 +1,9 @@
 import AVFoundation
 import UIKit
 
+/// Mutable capture state is confined to queue; callbacks are installed once before use.
 final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSampleBufferDelegate,
-                           AVCaptureAudioDataOutputSampleBufferDelegate {
+                           AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
     private let capture = AVCaptureSession()
     var session: AVCaptureSession? { capture }
     var onStatistics: ((CameraStatistics) -> Void)?
@@ -31,8 +32,9 @@ final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSamp
         // This directory contains only expendable buffer files, never saved clips.
         try? FileManager.default.removeItem(at: directory)
         try? ProtectedFiles.directory(directory)
-        for name in [AVCaptureSession.wasInterruptedNotification, AVCaptureSession.runtimeErrorNotification] {
-            observers.append(NotificationCenter.default.addObserver(forName: name, object: capture, queue: nil) { [weak self] _ in
+        for name in [AVCaptureSession.wasInterruptedNotification, AVCaptureSession.runtimeErrorNotification,
+                     AVAudioSession.interruptionNotification, AVAudioSession.mediaServicesWereResetNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: name == AVAudioSession.interruptionNotification || name == AVAudioSession.mediaServicesWereResetNotification ? AVAudioSession.sharedInstance() : capture, queue: nil) { [weak self] _ in
                 self?.queue.async { [weak self] in
                     self?.stopOnQueue()
                     self?.onInterruption?("Camera interrupted. Return to the app and tap Start Buffer to restart.")
@@ -98,13 +100,14 @@ final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSamp
         }
     }
     func stop() async { await withCheckedContinuation { c in queue.async { self.stopOnQueue(); c.resume() } } }
-    private func stopOnQueue(invalidateStart: Bool = true) {
+    private func stopOnQueue(invalidateStart: Bool = true, snapshotError: Error = CameraError.empty) {
         if invalidateStart { startRequest = UUID() }
         running = false
         capture.stopRunning()
         writer?.cancel(); writer = nil
         generation = UUID(); pending = 0
-        if let c = snapshotContinuation { snapshotContinuation = nil; c.resume(throwing: CameraError.empty) }
+        lastTimestamp = 0; lastReport = 0
+        if let c = snapshotContinuation { snapshotContinuation = nil; c.resume(throwing: snapshotError) }
         freezing = false
         ProtectedFiles.remove(index.clearUnpinned().map(\.url))
         onStatistics?(CameraStatistics(seconds: 0, bytes: index.bytes))
@@ -153,7 +156,7 @@ final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSamp
                     // During save, pin before pruning any boundary segments.
                     if !self.freezing { ProtectedFiles.remove(self.index.prune(now: self.lastTimestamp).map(\.url)) }
                     self.completeSnapshotIfReady()
-                case .failure(let error): self.stopOnQueue(); self.onInterruption?(error.localizedDescription)
+                case .failure(let error): self.stopOnQueue(snapshotError: error); self.onInterruption?(error.localizedDescription)
                 }
             }
         }
