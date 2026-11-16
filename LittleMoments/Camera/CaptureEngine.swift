@@ -1,4 +1,5 @@
 import AVFoundation
+import UIKit
 
 final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSampleBufferDelegate,
                            AVCaptureAudioDataOutputSampleBufferDelegate {
@@ -14,6 +15,7 @@ final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSamp
     private var audioEnabled = false
     private var pending = 0
     private var generation = UUID()
+    private var startRequest = UUID()
     private var freezing = false
     private var snapshotContinuation: CheckedContinuation<BufferSnapshot, Error>?
     private var snapshotEnd: Double = 0
@@ -38,14 +40,21 @@ final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSamp
             })
         }
     }
-    deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+    deinit { observers.forEach { NotificationCenter.default.removeObserver($0) } }
 
     func start(audio: Bool, front: Bool, duration: Double) async throws {
+        let request: UUID = await withCheckedContinuation { c in queue.async {
+            self.startRequest = UUID(); c.resume(returning: self.startRequest)
+        } }
         guard await Permissions.capture(audio: audio) else { throw CameraError.permission }
+        guard await MainActor.run(body: { UIApplication.shared.applicationState == .active }) else {
+            throw CameraError.writer("Camera startup paused. Tap Start Buffer after returning to the app.")
+        }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async { [self] in
                 do {
-                    stopOnQueue()
+                    guard request == startRequest else { throw CameraError.writer("Camera startup was canceled. Tap Start Buffer to restart.") }
+                    stopOnQueue(invalidateStart: false)
                     index.window = duration
                     audioEnabled = audio
                     try configure(front: front, audio: audio)
@@ -89,7 +98,8 @@ final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSamp
         }
     }
     func stop() async { await withCheckedContinuation { c in queue.async { self.stopOnQueue(); c.resume() } } }
-    private func stopOnQueue() {
+    private func stopOnQueue(invalidateStart: Bool = true) {
+        if invalidateStart { startRequest = UUID() }
         running = false
         capture.stopRunning()
         writer?.cancel(); writer = nil

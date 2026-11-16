@@ -14,6 +14,31 @@ final class MediaIntegrationTests: XCTestCase {
         try await SyntheticMovie.write(to: url, audio: audio)
         return VideoSegment(id: UUID(), url: url, start: 100, end: 102, bytes: ProtectedFiles.bytes(url))
     }
+    func testProductionSegmentWriterProducesDecodableVideo() async throws {
+        let source = try await fixture()
+        let asset = AVURLAsset(url: source.url)
+        let tracks = try await asset.loadTracks(withMediaType: .video)
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: tracks[0], outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        reader.add(output); XCTAssertTrue(reader.startReading())
+        let first = try XCTUnwrap(output.copyNextSampleBuffer())
+        let writer = try SegmentWriter(sample: first, audioEnabled: false, directory: directory)
+        try writer.append(first, isAudio: false)
+        while let sample = output.copyNextSampleBuffer() {
+            while !writer.video.isReadyForMoreMediaData {
+                guard writer.writer.status == .writing else { throw writer.writer.error ?? CameraError.unavailable }
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            try writer.append(sample, isAudio: false)
+        }
+        let result: VideoSegment = try await withCheckedThrowingContinuation { c in
+            writer.finish { c.resume(with: $0) }
+        }
+        XCTAssertGreaterThan(result.bytes, 0)
+        XCTAssertEqual(result.duration, 2, accuracy: 0.06)
+        try assertDecodable(AVURLAsset(url: result.url))
+    }
     func testCompositionTrimsAndPreservesAudio() async throws {
         let source = try await fixture(audio: true)
         let destination = directory.appendingPathComponent("clip.mp4")

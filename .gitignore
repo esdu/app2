@@ -7,3 +7,6 @@ xcuserdata/
 *.xcresult/
 artifacts/
 .env
+
+__pycache__/
+*.pyc

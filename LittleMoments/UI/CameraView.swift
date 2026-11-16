@@ -15,7 +15,10 @@ struct CameraView: View {
                         }
                         Spacer()
                         Button { showingLibrary = true } label: {
-                            Image(systemName: "square.stack").font(.title2).frame(width: 48, height: 48)
+                            VStack(spacing: 3) {
+                                Image(systemName: "square.stack").font(.title2)
+                                Text("\(model.library.clips.count) saved").font(.caption2)
+                            }.frame(minWidth: 48, minHeight: 48)
                         }.accessibilityLabel("Saved clips").accessibilityIdentifier("libraryButton")
                     }
                     ZStack {
@@ -65,7 +68,8 @@ struct CameraView: View {
                         .accessibilityIdentifier("saveButton").accessibilityHint("Saves the most recent buffer to your local clip library")
                     HStack(spacing: 16) {
                         Toggle(isOn: $model.audio) { Image(systemName: model.audio ? "mic" : "mic.slash") }
-                            .labelsHidden().accessibilityLabel("Record audio").accessibilityIdentifier("audioToggle")
+                            .toggleStyle(.button).frame(width: 48, height: 48)
+                            .accessibilityLabel("Record audio").accessibilityIdentifier("audioToggle")
                             .disabled(model.phase == .buffering || model.transitioning)
                         Button(model.phase == .buffering ? "Stop Buffer" : "Start Buffer") {
                             if model.phase == .buffering { model.stop() } else { model.start() }
