@@ -52,6 +52,11 @@ import SwiftUI
                                 .font(.caption.monospacedDigit()).padding(12).background(.black.opacity(0.65), in: Capsule())
                         }.padding(16)
                     }.frame(height: 330).accessibilityElement(children: .contain)
+                    if let warning = model.thermalWarning {
+                        Text(warning).font(.subheadline).foregroundStyle(.orange)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("thermalWarning")
+                    }
                     VStack(alignment: .leading, spacing: 10) {
                         HStack { Text("Keep the last").font(.subheadline.weight(.medium)); Spacer(); Text("\(Int(model.duration)) seconds").foregroundStyle(accent) }
                         Picker("Buffer duration", selection: Binding(get: { model.duration }, set: model.setDuration)) {
@@ -76,7 +81,8 @@ import SwiftUI
                         Button(model.phase == .buffering ? "Stop Buffer" : "Start Buffer") {
                             if model.phase == .buffering { model.stop() } else { model.start() }
                         }.font(.headline).frame(maxWidth: .infinity, minHeight: 52)
-                            .background(.white.opacity(0.10), in: Capsule()).disabled(model.transitioning)
+                            .background(.white.opacity(0.10), in: Capsule())
+                            .disabled(model.transitioning || (model.phase != .buffering && !model.canStart))
                             .accessibilityIdentifier("bufferButton")
                         Button { model.switchCamera() } label: {
                             Image(systemName: "arrow.triangle.2.circlepath.camera").font(.title2).frame(width: 48, height: 48)
@@ -113,7 +119,7 @@ import SwiftUI
                 } message: { Text(model.message ?? "") }
         }.tint(accent)
             .safeAreaInset(edge: .top) {
-                if let status = model.saveStatus {
+                if let status = model.saveStatus, !dimScreen.isDimmed {
                     Label(status, systemImage: "checkmark.circle.fill")
                         .font(.body.weight(.semibold)).foregroundStyle(.white)
                         .padding().frame(maxWidth: .infinity, alignment: .leading)

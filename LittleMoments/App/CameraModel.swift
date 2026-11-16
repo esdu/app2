@@ -11,6 +11,7 @@ import SwiftUI
     @Published private(set) var bytes: Int64 = 0
     @Published private(set) var transitioning = false
     @Published private(set) var saving = false
+    @Published private(set) var thermalState: ThermalLevel
     @Published var message: String?
     @Published private(set) var saveStatus: String?
     @Published private(set) var foreground = true
@@ -28,12 +29,19 @@ import SwiftUI
     private var operation = UUID()
     private var transitionCount = 0
     private let preferencesStore: CameraPreferencesStore
+    private let thermalMonitor: ThermalMonitoring
+    private var stoppedStartupOperation: UUID?
+    private var stopping = false
 
     init(camera: CameraService, library: ClipLibrary, testing: Bool = false,
          preferencesStore: CameraPreferencesStore = MemoryCameraPreferencesStore(),
          saver: (any MomentSaving)? = nil, haptics: (any SaveHaptics)? = nil,
-         announcer: (any SaveAnnouncing)? = nil, feedbackScheduler: (any FeedbackScheduling)? = nil) {
+         announcer: (any SaveAnnouncing)? = nil, feedbackScheduler: (any FeedbackScheduling)? = nil,
+         thermalMonitor: ThermalMonitoring? = nil) {
         self.preferencesStore = preferencesStore
+        let monitor = thermalMonitor ?? MutableThermalMonitor()
+        self.thermalMonitor = monitor
+        self.thermalState = monitor.state
         var initialPreferences = CameraPreferences.defaults
         var preferencesError: String?
         do { initialPreferences = try preferencesStore.load().validated() }
@@ -45,6 +53,7 @@ import SwiftUI
         self.announcer = announcer ?? VoiceOverSaveAnnouncer()
         self.feedbackScheduler = feedbackScheduler ?? TaskFeedbackScheduler()
         message = preferencesError
+        monitor.onChange = { [weak self] in self?.refreshThermalState() }
         camera.onStatistics = { [weak self] statistics in Task { @MainActor in
             self?.seconds = statistics.seconds; self?.bytes = statistics.bytes
         } }
@@ -54,16 +63,26 @@ import SwiftUI
         do { try library.load() } catch { message = error.localizedDescription }
     }
     func start() {
-        guard foreground, !transitioning, phase != .buffering else { return }
+        refreshThermalState()
+        guard canStart else { return }
         beginTransition(); phase = .starting
         let token = UUID(); operation = token
         Task {
-            defer { endTransition() }
+            defer {
+                if stoppedStartupOperation == token { stoppedStartupOperation = nil }
+                endTransition()
+            }
+            guard operation == token, foreground, cameraScreenVisible, !ThermalPolicy(state: thermalMonitor.state).blocksCapture else {
+                refreshThermalState()
+                return
+            }
             do {
                 try await camera.start(audio: audio, front: front, duration: duration)
-                if operation == token && foreground { phase = .buffering }
-                else { await camera.stop() }
+                refreshThermalState()
+                if operation == token && foreground && cameraScreenVisible && !ThermalPolicy(state: thermalState).blocksCapture { phase = .buffering }
+                else if stoppedStartupOperation != token { await camera.stop() }
             } catch {
+                refreshThermalState()
                 if operation == token {
                     phase = (error as? CameraError).map { if case .permission = $0 { return .denied }; return .failed } ?? .failed
                     message = error.localizedDescription
@@ -74,20 +93,36 @@ import SwiftUI
     private func beginTransition() { transitionCount += 1; transitioning = true }
     private func endTransition() { transitionCount -= 1; transitioning = transitionCount > 0 }
     func stop(paused: Bool = false) {
+        let needsStop = phase == .buffering || phase == .starting
+        if phase == .starting { stoppedStartupOperation = operation }
         operation = UUID()
         phase = paused ? .paused : .stopped
+        guard needsStop, !stopping else { return }
+        stopping = true
         beginTransition()
-        Task { defer { endTransition() }; await camera.stop() }
+        Task { defer { stopping = false; endTransition() }; await camera.stop() }
     }
     func setForeground(_ active: Bool) {
         foreground = active
         if !active {
             clearSaveStatus()
-            stop(paused: phase == .buffering || phase == .starting || phase == .paused)
+            if phase == .buffering || phase == .starting { stop(paused: true) }
         } else if let outcome = pendingSaveOutcome {
             pendingSaveOutcome = nil
             presentSaveOutcome(outcome, playHaptics: false)
         }
+    }
+    var thermalWarning: String? { ThermalPolicy(state: thermalState).warning }
+    var canStart: Bool {
+        foreground && cameraScreenVisible && !transitioning && phase != .buffering && !ThermalPolicy(state: thermalState).blocksCapture
+    }
+    private func refreshThermalState() {
+        let current = thermalMonitor.state
+        if thermalState != current { thermalState = current }
+        guard ThermalPolicy(state: current).blocksCapture, phase == .buffering || phase == .starting else { return }
+        // CameraService.stop invalidates pending production startup and preserves pinned sources.
+        // Keep the save task alive so its existing success/failure path releases its own lease.
+        stop(paused: true)
     }
     var canChangePreferences: Bool { phase != .buffering && phase != .starting && !transitioning }
     func updatePreferences(_ edit: (inout CameraPreferences) -> Void) {
