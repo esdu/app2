@@ -1,7 +1,9 @@
 import SwiftUI
 
-struct CameraView: View {
+@MainActor struct CameraView: View {
     @ObservedObject var model: CameraModel
+    @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var dimScreen = DimScreenCoordinator()
     @State private var showingLibrary = false
     private let accent = Color(red: 0.91, green: 0.80, blue: 0.61)
     var body: some View {
@@ -81,6 +83,15 @@ struct CameraView: View {
                         }.disabled(model.phase == .buffering || model.transitioning)
                             .accessibilityLabel("Switch camera").accessibilityValue(model.front ? "Front" : "Rear")
                     }
+                    VStack(spacing: 12) {
+                        Text(dimScreen.battery.text).font(.footnote)
+                            .accessibilityIdentifier("batteryStatus")
+                        Button("Dim screen") { dimScreen.dim(while: model.phase) }
+                            .frame(minHeight: 48).buttonStyle(.bordered)
+                            .disabled(model.phase != .buffering || model.transitioning)
+                            .accessibilityIdentifier("dimScreenButton")
+                            .accessibilityHint("Lowers brightness and shows recording status, Save moment, and Wake screen")
+                    }
                     if model.phase == .denied {
                         Button("Open Settings") { if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) } }
                             .accessibilityIdentifier("settingsButton")
@@ -89,9 +100,11 @@ struct CameraView: View {
                         .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }.padding(22)
             }.background(Color(white: 0.045)).toolbar(.hidden, for: .navigationBar)
+                .accessibilityHidden(dimScreen.isDimmed)
                 .navigationDestination(isPresented: $showingLibrary) { LibraryView(library: model.library) }
                 .onChange(of: showingLibrary) { _, shown in
                     model.setCameraScreenVisible(!shown)
+                    dimScreen.setUIActive(!shown && scenePhase == .active)
                     if shown { model.stop() }
                 }
                 .alert("Little Moments", isPresented: Binding(get: { model.foreground && model.message != nil }, set: { if !$0 && model.foreground { model.message = nil } })) {
@@ -99,7 +112,7 @@ struct CameraView: View {
                 } message: { Text(model.message ?? "") }
         }.tint(accent)
             .safeAreaInset(edge: .top) {
-                if let status = model.saveStatus {
+                if let status = model.saveStatus, !dimScreen.isDimmed {
                     Label(status, systemImage: "checkmark.circle.fill")
                         .font(.body.weight(.semibold)).foregroundStyle(.white)
                         .padding().frame(maxWidth: .infinity, alignment: .leading)
@@ -108,5 +121,18 @@ struct CameraView: View {
                         .accessibilityIdentifier("saveStatus")
                 }
             }
+            .background(CameraSceneReader { dimScreen.attach(to: $0) }.frame(width: 0, height: 0))
+            .overlay {
+                if dimScreen.isDimmed {
+                    DimRecordingView(status: model.status, seconds: model.seconds, battery: dimScreen.battery,
+                                     canSave: model.canSave, saving: model.saving, saveStatus: model.saveStatus,
+                                     save: { model.save() }, wake: { dimScreen.wake() })
+                        .background(.black.ignoresSafeArea())
+                }
+            }
+            .onAppear { dimScreen.setUIActive(scenePhase == .active && !showingLibrary) }
+            .onDisappear { dimScreen.setUIActive(false) }
+            .onChange(of: scenePhase) { _, phase in dimScreen.setUIActive(phase == .active && !showingLibrary) }
+            .onChange(of: model.phase) { _, phase in dimScreen.capturePhaseChanged(phase) }
     }
 }
