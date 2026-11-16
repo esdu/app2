@@ -5,8 +5,9 @@ struct ClipComposer {
     /// translated once, including its audio. Gaps are collapsed without A/V drift.
     func compose(_ snapshot: BufferSnapshot, to destination: URL) async throws {
         let composition = AVMutableComposition()
-        guard let video = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid),
-              let audio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else { throw CameraError.empty }
+        guard let video = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else { throw CameraError.empty }
+        // Empty audio tracks can make otherwise valid silent assets non-exportable.
+        var audio: AVMutableCompositionTrack?
         var cursor = CMTime.zero
         for segment in snapshot.segments.sorted(by: { $0.start < $1.start }) {
             let asset = AVURLAsset(url: segment.url)
@@ -24,6 +25,8 @@ struct ClipComposer {
             if let sourceAudio = try await asset.loadTracks(withMediaType: .audio).first {
                 let audioRange = CMTimeRangeGetIntersection(range, otherRange: try await sourceAudio.load(.timeRange))
                 if audioRange.duration.isNumeric, audioRange.duration > .zero {
+                    if audio == nil { audio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) }
+                    guard let audio else { throw CameraError.unavailable }
                     try audio.insertTimeRange(audioRange, of: sourceAudio, at: cursor + audioRange.start - range.start)
                 }
             }
