@@ -22,6 +22,8 @@ final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSamp
     private var snapshotEnd: Double = 0
     private var lastTimestamp: Double = 0
     private var lastReport: Double = 0
+    private var health: CaptureWatchdog?
+    private var healthTimer: DispatchSourceTimer?
     private var observers: [NSObjectProtocol] = []
     private let diskLimit: Int64 = 192 * 1_024 * 1_024
 
@@ -63,6 +65,17 @@ final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSamp
                     capture.startRunning()
                     guard capture.isRunning else { throw CameraError.unavailable }
                     running = true
+                    health = CaptureWatchdog(startedAt: ProcessInfo.processInfo.systemUptime)
+                    let timer = DispatchSource.makeTimerSource(queue: queue)
+                    timer.schedule(deadline: .now() + 1, repeating: 1)
+                    timer.setEventHandler { [weak self] in
+                        guard let self, self.running,
+                              self.health?.timedOut(at: ProcessInfo.processInfo.systemUptime) == true else { return }
+                        self.stopOnQueue()
+                        self.onInterruption?("Camera frames stopped arriving. Tap Start Buffer to retry.")
+                    }
+                    healthTimer = timer
+                    timer.resume()
                     continuation.resume()
                 } catch { stopOnQueue(); continuation.resume(throwing: error) }
             }
@@ -103,6 +116,7 @@ final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSamp
     private func stopOnQueue(invalidateStart: Bool = true, snapshotError: Error = CameraError.empty) {
         if invalidateStart { startRequest = UUID() }
         running = false
+        healthTimer?.cancel(); healthTimer = nil; health = nil
         capture.stopRunning()
         writer?.cancel(); writer = nil
         generation = UUID(); pending = 0
@@ -119,7 +133,9 @@ final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSamp
             let isAudio = output is AVCaptureAudioDataOutput
             let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             guard pts.isNumeric else { return }
+            let hostTime = ProcessInfo.processInfo.systemUptime
             if !isAudio {
+                health?.sawVideo(at: hostTime)
                 lastTimestamp = pts.seconds
                 if let current = writer, pts.seconds - current.start.seconds >= 2 {
                     writer = nil
@@ -129,8 +145,8 @@ final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSamp
                 if writer == nil { writer = try SegmentWriter(sample: sampleBuffer, audioEnabled: audioEnabled, directory: directory) }
             }
             try writer?.append(sampleBuffer, isAudio: isAudio)
-            if !isAudio && pts.seconds - lastReport >= 0.25 {
-                lastReport = pts.seconds
+            if hostTime - lastReport >= 0.25 {
+                lastReport = hostTime
                 let diskBytes = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
                     .reduce(Int64(0)) { $0 + ProtectedFiles.bytes($1) }
                 let capacity = try directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])

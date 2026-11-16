@@ -74,3 +74,11 @@ struct Timeline {
 }
 
 enum CapturePhase: String { case stopped, starting, buffering, paused, denied, failed }
+
+/// Uses monotonic host time, independent of potentially stalled media timestamps.
+struct CaptureWatchdog {
+    let startedAt: Double
+    private(set) var lastVideoAt: Double?
+    mutating func sawVideo(at time: Double) { lastVideoAt = time }
+    func timedOut(at time: Double) -> Bool { time - (lastVideoAt ?? startedAt) >= 5 }
+}

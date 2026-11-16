@@ -5,6 +5,14 @@ final class SegmentIndexTests: XCTestCase {
     private func segment(_ start: Double, _ end: Double, bytes: Int64 = 10) -> VideoSegment {
         VideoSegment(id: UUID(), url: URL(fileURLWithPath: "/tmp/\(UUID()).mov"), start: start, end: end, bytes: bytes)
     }
+    func testWatchdogTimesOutWithoutVideoAndResetsOnFrames() {
+        var watchdog = CaptureWatchdog(startedAt: 100)
+        XCTAssertFalse(watchdog.timedOut(at: 104.9))
+        XCTAssertTrue(watchdog.timedOut(at: 105))
+        watchdog.sawVideo(at: 104)
+        XCTAssertFalse(watchdog.timedOut(at: 108.9))
+        XCTAssertTrue(watchdog.timedOut(at: 109))
+    }
     func testDefaultWindow() { XCTAssertEqual(SegmentIndex().window, 30) }
     func testDurationChoicesAndBoundarySegment() {
         for window in [15.0, 30, 60, 120] {
