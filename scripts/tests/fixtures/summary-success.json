@@ -1,0 +1,10 @@
+{
+  "title": "LittleMoments",
+  "result": "Passed",
+  "totalTestCount": 33,
+  "passedTests": 33,
+  "failedTests": 0,
+  "skippedTests": 0,
+  "testFailures": [],
+  "devicesAndConfigurations": [{"device": {"deviceName": "iPhone SE (3rd generation)", "osVersion": "18.5"}}]
+}
