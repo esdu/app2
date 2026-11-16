@@ -7,6 +7,9 @@ private final class ControlledCamera: CameraService {
     var onStatistics: ((CameraStatistics) -> Void)?
     var onInterruption: ((String) -> Void)?
     var permission = true
+    var suspendStop = false
+    var pendingStop: CheckedContinuation<Void, Never>?
+    var onStop: (() -> Void)?
     var suspendStart = false
     var pendingStart: CheckedContinuation<Void, Never>?
     var onStart: (() -> Void)?
@@ -17,7 +20,10 @@ private final class ControlledCamera: CameraService {
         if suspendStart { await withCheckedContinuation { c in pendingStart = c; onStart?() } }
         if !permission { throw CameraError.permission }
     }
-    @MainActor func stop() async { stops += 1 }
+    @MainActor func stop() async {
+        stops += 1
+        if suspendStop { await withCheckedContinuation { c in pendingStop = c; onStop?() } }
+    }
     func snapshot() async throws -> BufferSnapshot { throw CameraError.empty }
     func release(_ snapshot: BufferSnapshot) async { }
 }
@@ -43,7 +49,7 @@ private final class ControlledCamera: CameraService {
     func testBackgroundPausesAndForegroundDoesNotResume() async {
         let camera = ControlledCamera(); let model = makeModel(camera)
         model.start(); await waitUntil { !model.transitioning }; XCTAssertEqual(model.phase, .buffering)
-        model.setForeground(false); await waitUntil { camera.stops > 0 }; XCTAssertEqual(model.phase, .paused)
+        model.setForeground(false); await waitUntil { !model.transitioning }; XCTAssertEqual(model.phase, .paused)
         model.setForeground(true); XCTAssertEqual(model.phase, .paused)
         XCTAssertEqual(camera.starts, 1); XCTAssertGreaterThanOrEqual(camera.stops, 1)
         model.start(); await waitUntil { !model.transitioning }; XCTAssertEqual(camera.starts, 2)
@@ -66,6 +72,21 @@ private final class ControlledCamera: CameraService {
         XCTAssertEqual(model.phase, .paused)
         XCTAssertFalse(model.transitioning)
         XCTAssertGreaterThanOrEqual(camera.stops, 1)
+    }
+    func testRestartWaitsUntilPreviousStopCompletes() async {
+        let camera = ControlledCamera(); let model = makeModel(camera)
+        model.start(); await waitUntil { !model.transitioning }
+        camera.suspendStop = true
+        let stopping = expectation(description: "Stop is pending")
+        camera.onStop = { stopping.fulfill() }
+        model.stop(); await fulfillment(of: [stopping], timeout: 2)
+        XCTAssertTrue(model.transitioning)
+        model.start()
+        XCTAssertEqual(camera.starts, 1)
+        camera.suspendStop = false; camera.pendingStop?.resume(); camera.pendingStop = nil
+        await waitUntil { !model.transitioning }
+        model.start(); await waitUntil { !model.transitioning }
+        XCTAssertEqual(camera.starts, 2)
     }
     func testSaveFailureIsVisible() async {
         let camera = ControlledCamera(); let model = makeModel(camera)

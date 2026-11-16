@@ -16,6 +16,7 @@ import SwiftUI
     let testing: Bool
     private var foreground = true
     private var operation = UUID()
+    private var transitionCount = 0
 
     init(camera: CameraService, library: ClipLibrary, testing: Bool = false) {
         self.camera = camera; self.library = library; self.testing = testing
@@ -29,9 +30,10 @@ import SwiftUI
     }
     func start() {
         guard foreground, !transitioning, phase != .buffering else { return }
-        transitioning = true; phase = .starting
+        beginTransition(); phase = .starting
         let token = UUID(); operation = token
         Task {
+            defer { endTransition() }
             do {
                 try await camera.start(audio: audio, front: front, duration: duration)
                 if operation == token && foreground { phase = .buffering }
@@ -42,13 +44,15 @@ import SwiftUI
                     message = error.localizedDescription
                 }
             }
-            transitioning = false
         }
     }
+    private func beginTransition() { transitionCount += 1; transitioning = true }
+    private func endTransition() { transitionCount -= 1; transitioning = transitionCount > 0 }
     func stop(paused: Bool = false) {
         operation = UUID()
         phase = paused ? .paused : .stopped
-        Task { await camera.stop() }
+        beginTransition()
+        Task { defer { endTransition() }; await camera.stop() }
     }
     func setForeground(_ active: Bool) {
         foreground = active
