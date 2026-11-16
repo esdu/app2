@@ -25,11 +25,23 @@ final class SegmentWriter: SegmentWriting {
         writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         guard let format = CMSampleBufferGetFormatDescription(sample) else { throw CameraError.unavailable }
         let size = CMVideoFormatDescriptionGetDimensions(format)
-        video = AVAssetWriterInput(mediaType: .video, outputSettings: [
+        var videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: Int(size.width), AVVideoHeightKey: Int(size.height),
             AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 4_000_000,
-                                             AVVideoMaxKeyFrameIntervalKey: 30]])
+                                             AVVideoMaxKeyFrameIntervalKey: 30]]
+        // Keep camera-provided colorimetry. The image subtype/source hint carries
+        // full/video range; no RGB conversion or invented range attachment occurs.
+        var color: [String: Any] = [:]
+        for (outputKey, sourceKey) in [(AVVideoColorPrimariesKey, kCMFormatDescriptionExtension_ColorPrimaries),
+                                      (AVVideoTransferFunctionKey, kCMFormatDescriptionExtension_TransferFunction),
+                                      (AVVideoYCbCrMatrixKey, kCMFormatDescriptionExtension_YCbCrMatrix)] {
+            if let value = CMFormatDescriptionGetExtension(format, extensionKey: sourceKey) as? String {
+                color[outputKey] = value
+            }
+        }
+        if !color.isEmpty { videoSettings[AVVideoColorPropertiesKey] = color }
+        video = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings, sourceFormatHint: format)
         video.expectsMediaDataInRealTime = true
         guard writer.canAdd(video) else { throw CameraError.unavailable }
         writer.add(video)
