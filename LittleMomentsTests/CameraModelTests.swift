@@ -90,7 +90,10 @@ private final class ControlledCamera: CameraService {
     }
     func testSaveFailureIsVisible() async {
         let camera = ControlledCamera(); let model = makeModel(camera)
-        model.start(); await waitUntil { !model.transitioning }; model.save(); await waitUntil { !model.saving }
+        model.start(); await waitUntil { !model.transitioning }
+        camera.onStatistics?(CameraStatistics(seconds: 2, bytes: 100))
+        await waitUntil { model.canSave }
+        model.save(); await waitUntil { !model.saving }
         XCTAssertFalse(model.saving); XCTAssertNotNil(model.message)
     }
 }

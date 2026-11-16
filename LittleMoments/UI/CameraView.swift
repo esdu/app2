@@ -19,7 +19,7 @@ struct CameraView: View {
                                 Image(systemName: "square.stack").font(.title2)
                                 Text("\(model.library.clips.count) saved").font(.caption2)
                             }.frame(minWidth: 48, minHeight: 48)
-                        }.accessibilityLabel("Saved clips").accessibilityIdentifier("libraryButton")
+                        }.accessibilityLabel("Saved clips").accessibilityValue("\(model.library.clips.count) saved").accessibilityIdentifier("libraryButton")
                     }
                     ZStack {
                         RoundedRectangle(cornerRadius: 28).fill(Color(white: 0.10))
@@ -63,8 +63,8 @@ struct CameraView: View {
                             Text(model.saving ? "SAVING…" : "SAVE MOMENT").tracking(1.5)
                         }.font(.headline).frame(maxWidth: .infinity).frame(minHeight: 70)
                     }.buttonStyle(.plain).background(accent, in: RoundedRectangle(cornerRadius: 24)).foregroundStyle(.black)
-                        .opacity(model.phase == .buffering && model.seconds > 0 ? 1 : 0.4)
-                        .disabled(model.phase != .buffering || model.seconds <= 0 || model.saving)
+                        .opacity(model.canSave || model.saving ? 1 : 0.4)
+                        .disabled(!model.canSave)
                         .accessibilityIdentifier("saveButton").accessibilityHint("Saves the most recent buffer to your local clip library")
                     HStack(spacing: 16) {
                         Toggle(isOn: Binding(get: { model.audio }, set: model.setAudio)) { Image(systemName: model.audio ? "mic" : "mic.slash") }
@@ -91,10 +91,23 @@ struct CameraView: View {
                 }.padding(22)
             }.background(Color(white: 0.045)).toolbar(.hidden, for: .navigationBar)
                 .navigationDestination(isPresented: $showingLibrary) { LibraryView(library: model.library) }
-                .onChange(of: showingLibrary) { _, shown in if shown { model.stop() } }
-                .alert("Little Moments", isPresented: Binding(get: { model.message != nil }, set: { if !$0 { model.message = nil } })) {
+                .onChange(of: showingLibrary) { _, shown in
+                    model.setCameraScreenVisible(!shown)
+                    if shown { model.stop() }
+                }
+                .alert("Little Moments", isPresented: Binding(get: { model.foreground && model.message != nil }, set: { if !$0 && model.foreground { model.message = nil } })) {
                     Button("OK") { model.message = nil }
                 } message: { Text(model.message ?? "") }
         }.tint(accent)
+            .safeAreaInset(edge: .top) {
+                if let status = model.saveStatus {
+                    Label(status, systemImage: "checkmark.circle.fill")
+                        .font(.body.weight(.semibold)).foregroundStyle(.white)
+                        .padding().frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(white: 0.16))
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("saveStatus")
+                }
+            }
     }
 }

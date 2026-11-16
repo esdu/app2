@@ -1,0 +1,11 @@
+# Save feedback (#4)
+
+Every save trigger calls `CameraModel.save()`. Its `canSave` guard requires an active app, visible camera screen, finished transition, buffering phase, nonempty buffer, and no existing save. Opening the library updates camera-screen visibility and stops capture. A save already in progress can still commit and release its buffer lease.
+
+`MomentSaving` is the commit boundary: production uses the existing `ClipLibrary.save`, including atomic publication and library reload. Success is reported only after it returns. `saveStatus` is a five-second nonmodal status, displayed above the navigation stack so library navigation does not hide the outcome. Errors still use the persistent `message` alert. The banner uses scalable body text, white on an opaque dark background, and combines its accessibility children.
+
+Haptics, VoiceOver announcements, and the timeout scheduler are injectable. Each completed active attempt produces one success or failure haptic and one announcement. VoiceOver uses `.announcement`, without moving accessibility focus. Finishing while inactive defers text and announcement until the next active presentation, and never replays a delayed haptic. Inactive views suppress the actionable alert without deleting its message. Each new status cancels its old timeout and changes a token; even an already queued old callback cannot remove a newer status or clear an error.
+
+`SaveFeedbackTests` covers a real encoded fixture committed through the production library and reloaded after the source is removed; suspended commit and duplicate triggers; snapshot and export failures; lease release; stale timeout callbacks; inactive completion; library navigation; and central eligibility guards. `CameraModelTests.testSaveFailureIsVisible` now explicitly supplies ready buffer statistics. `LittleMomentsUITests.testSavePlaybackDeleteAndNavigation` saves twice without dismissing an alert, checks two library rows, plays a clip, and deletes both clips. Existing permission alert tests remain intact.
+
+Local validation: `git diff --check` passed. This Linux environment has no Swift compiler, Xcode, or iOS simulator, so compilation and simulator UI execution must be run in the project's macOS CI after project regeneration. Physical haptic behavior and VoiceOver on a physical iPhone remain unverified; no hardware pass is claimed.
