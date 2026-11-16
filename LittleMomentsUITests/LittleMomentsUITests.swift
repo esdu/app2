@@ -17,7 +17,15 @@ final class LittleMomentsUITests: XCTestCase {
         app.launch(); XCTAssertTrue(app.buttons["bufferButton"].waitForExistence(timeout: 10))
     }
     private func reveal(_ element: XCUIElement) {
-        for _ in 0..<5 { if element.isHittable { return }; app.swipeUp() }
+        // isHittable can be true for a clipped button at the bottom of a small
+        // screen. Keep the entire control away from system gesture areas.
+        let viewport = app.frame.insetBy(dx: 0, dy: 44)
+        for _ in 0..<5 {
+            if element.isHittable && viewport.contains(element.frame) { return }
+            app.swipeUp()
+        }
+        XCTAssertTrue(element.isHittable && viewport.contains(element.frame),
+                      "Control must be fully visible before tapping")
     }
     private func start() {
         let button = app.buttons["bufferButton"]; reveal(button); button.tap()

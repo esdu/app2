@@ -36,6 +36,7 @@ jobs:
           set -o pipefail
           xcodebuild -resolvePackageDependencies -project LittleMoments.xcodeproj -scheme LittleMoments CODE_SIGNING_ALLOWED=NO 2>&1 | tee artifacts/dependencies.log
       - name: Compile application and tests
+        id: build
         run: |
           set -o pipefail
           xcodebuild build-for-testing -project LittleMoments.xcodeproj -scheme LittleMoments -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -derivedDataPath build/DerivedData -resultBundlePath artifacts/Build.xcresult CODE_SIGNING_ALLOWED=NO 2>&1 | tee artifacts/build.log
@@ -48,6 +49,7 @@ jobs:
           set -o pipefail
           xcodebuild test-without-building -project LittleMoments.xcodeproj -scheme LittleMoments -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -derivedDataPath build/DerivedData -resultBundlePath artifacts/LittleMoments.xcresult -parallel-testing-enabled NO -test-timeouts-enabled YES -default-test-execution-time-allowance 120 -maximum-test-execution-time-allowance 180 CODE_SIGNING_ALLOWED=NO 2>&1 | tee artifacts/tests.log
       - name: Archive unsigned iOS app and validate its privacy manifest
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           set -o pipefail
           xcodebuild archive -project LittleMoments.xcodeproj -scheme LittleMoments -configuration Release -destination 'generic/platform=iOS' -archivePath build/LittleMoments.xcarchive -derivedDataPath build/ArchiveDerivedData -resultBundlePath artifacts/Archive.xcresult CODE_SIGNING_ALLOWED=NO 2>&1 | tee artifacts/archive.log
