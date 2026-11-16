@@ -75,9 +75,9 @@ UI tests pass `--uitesting` in DEBUG to select an explicitly labeled synthetic c
 
 ## GitHub Actions
 
-`.github/workflows/ios-ci.yml` runs on main pushes, pull requests, and manual dispatch using standard GitHub-hosted `macos-latest`. It records the runner's selected Xcode, discovers an available iPhone dynamically from installed iOS runtimes, resolves dependencies (currently none), compiles the app and both test targets, then runs all tests without signing.
+`.github/workflows/ios-ci.yml` runs on main pushes, pull requests, and manual dispatch using standard GitHub-hosted `macos-15-intel`. It records the runner's selected Xcode, discovers an available iPhone dynamically from installed iOS runtimes, resolves dependencies (currently none), compiles the app and both test targets, then runs all tests without signing.
 
-Compilation or test failure fails the job. `ios-results-*` artifacts are uploaded even on failure and retain build/test logs, the `.xcresult` bundle, test screenshot attachments when available, a final simulator screenshot, and app logs for 14 days. Download artifacts from the workflow run page. Open `.xcresult` in Xcode to inspect test details. No Apple certificates, provisioning profiles, paid third-party services, or cloud infrastructure are configured. Repository/org Actions policies must allow the standard GitHub actions and macOS runners.
+Compilation or test failure fails the job. `ios-results-*` artifacts are uploaded even on failure and retain build/test logs, the `.xcresult` bundle, test screenshot attachments when available, a final simulator screenshot, and app logs for 14 days. Download artifacts from the workflow run page. Open `.xcresult` in Xcode to inspect test details. No Apple certificates, provisioning profiles, paid third-party services, or cloud infrastructure are configured. This standard Intel label avoids the ARM64 capacity failure observed during development; it is not a larger paid runner. Repository/org Actions policies must allow the standard GitHub actions and macOS runners.
 
 The project generator is optional: after adding Swift files, run `python3 scripts/generate_project.py` and commit the updated project. It uses only Python's standard library.
 
