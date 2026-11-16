@@ -1,7 +1,16 @@
 import AVFoundation
 
 /// A single compressed segment. Only accessed on CaptureEngine.queue.
-final class SegmentWriter {
+protocol SegmentWriting: AnyObject {
+    var start: CMTime { get }
+    var end: CMTime { get }
+    var url: URL { get }
+    func append(_ sample: CMSampleBuffer, isAudio: Bool) throws -> Bool
+    func finish(completion: @escaping (Result<VideoSegment, Error>) -> Void)
+    func cancel()
+}
+
+final class SegmentWriter: SegmentWriting {
     let writer: AVAssetWriter
     let video: AVAssetWriterInput
     let audio: AVAssetWriterInput?
@@ -37,15 +46,22 @@ final class SegmentWriter {
         writer.startSession(atSourceTime: start)
         try ProtectedFiles.protect(url)
     }
-    func append(_ sample: CMSampleBuffer, isAudio: Bool) throws {
+    /// False means encoder backpressure. The real-time caller drops the sample;
+    /// the manual harness may retry outside the capture queue with a deadline.
+    @discardableResult func append(_ sample: CMSampleBuffer, isAudio: Bool) throws -> Bool {
         let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-        guard pts.isNumeric, pts >= start, timeline.accept(pts.seconds, audio: isAudio) else { return }
-        guard let input = isAudio ? audio : video, input.isReadyForMoreMediaData else { return }
+        guard pts.isNumeric, pts >= start else { return true }
+        guard let input = isAudio ? audio : video else { return true }
+        guard input.isReadyForMoreMediaData else { return false }
+        // A rejected sample must not consume its timestamp: manual retries use
+        // exactly the same ingestion path and production still never waits.
+        guard timeline.accept(pts.seconds, audio: isAudio) else { return true }
         guard input.append(sample) else { throw writer.error ?? CameraError.writer("Video encoding failed.") }
         if !isAudio {
             let duration = CMSampleBufferGetDuration(sample)
             end = pts + (duration.isNumeric && duration.seconds > 0 ? duration : CMTime(value: 1, timescale: 30))
         }
+        return true
     }
     func finish(completion: @escaping (Result<VideoSegment, Error>) -> Void) {
         video.markAsFinished()
