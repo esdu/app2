@@ -9,6 +9,8 @@ final class LittleMomentsUITests: XCTestCase {
     override func tearDownWithError() throws {
         let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         screenshot.name = name; screenshot.lifetime = .keepAlways; add(screenshot)
+        let tree = XCTAttachment(string: app.debugDescription)
+        tree.name = "Accessibility hierarchy"; tree.lifetime = .keepAlways; add(tree)
         app.terminate()
     }
     private func launch() {

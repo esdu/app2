@@ -2,15 +2,13 @@
 import AVFoundation
 
 /// Opt-in only through --uitesting in DEBUG builds. Never selected for normal launches.
-// Mutable fixture/timer state is used only by MainActor-isolated async methods.
+// Mutable fixture state is used only by MainActor-isolated async methods.
 final class SyntheticCamera: CameraService, @unchecked Sendable {
     var session: AVCaptureSession? { nil }
     var onStatistics: ((CameraStatistics) -> Void)?
     var onInterruption: ((String) -> Void)?
     private let denied: Bool
     private var fixture: URL?
-    private var timer: Timer?
-    private var seconds = 0.0
     private var active = false
     init(denied: Bool = false) { self.denied = denied }
     @MainActor func start(audio: Bool, front: Bool, duration: Double) async throws {
@@ -23,16 +21,10 @@ final class SyntheticCamera: CameraService, @unchecked Sendable {
             fixture = url
         }
         active = true
-        seconds = 2
-        onStatistics?(CameraStatistics(seconds: seconds, bytes: ProtectedFiles.bytes(fixture!)))
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            self.seconds = min(duration, self.seconds + 0.25)
-            self.onStatistics?(CameraStatistics(seconds: self.seconds, bytes: ProtectedFiles.bytes(self.fixture!)))
-        }
+        // Fixed statistics match the actual fixture and leave XCTest a quiescent UI.
+        onStatistics?(CameraStatistics(seconds: 2, bytes: ProtectedFiles.bytes(fixture!)))
     }
-    @MainActor func stop() async { active = false; timer?.invalidate(); timer = nil; onStatistics?(CameraStatistics(seconds: 0, bytes: 0)) }
+    @MainActor func stop() async { active = false; onStatistics?(CameraStatistics(seconds: 0, bytes: 0)) }
     @MainActor func snapshot() async throws -> BufferSnapshot {
         guard active, let fixture else { throw CameraError.empty }
         return BufferSnapshot(token: UUID(), segments: [VideoSegment(id: UUID(), url: fixture, start: 0, end: 2,
@@ -59,9 +51,13 @@ enum SyntheticMovie {
             if let audioInput { writer.add(audioInput) }
             guard writer.startWriting() else { throw writer.error ?? CameraError.unavailable }
             writer.startSession(atSourceTime: .zero)
+            let deadline = ContinuousClock.now.advanced(by: .seconds(20))
             for frame in 0..<60 {
                 while !video.isReadyForMoreMediaData {
                     guard writer.status == .writing else { throw writer.error ?? CameraError.unavailable }
+                    guard ContinuousClock.now < deadline else {
+                        writer.cancelWriting(); throw CameraError.writer("Synthetic video encoder timed out.")
+                    }
                     try await Task.sleep(for: .milliseconds(2))
                 }
                 var pixel: CVPixelBuffer?
@@ -81,7 +77,13 @@ enum SyntheticMovie {
                     throw writer.error ?? CameraError.unavailable
                 }
                 if let audioInput {
-                    while !audioInput.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(2)) }
+                    while !audioInput.isReadyForMoreMediaData {
+                        guard writer.status == .writing else { throw writer.error ?? CameraError.unavailable }
+                        guard ContinuousClock.now < deadline else {
+                            writer.cancelWriting(); throw CameraError.writer("Synthetic audio encoder timed out.")
+                        }
+                        try await Task.sleep(for: .milliseconds(2))
+                    }
                     let sample = try tone(frame: frame)
                     guard audioInput.append(sample) else { throw writer.error ?? CameraError.unavailable }
                 }
