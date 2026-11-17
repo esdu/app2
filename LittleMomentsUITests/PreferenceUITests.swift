@@ -23,8 +23,11 @@ final class PreferenceUITests: XCTestCase {
         reveal(postRoll, in: app)
         XCTAssertTrue(postRoll.buttons["Off"].isSelected)
         postRoll.buttons["5s after"].tap()
-        let audio = app.buttons["audioToggle"]
+        // Toggle's button styling does not guarantee a button accessibility type.
+        // Identify the preference by its stable ID and verify its public semantics.
+        let audio = app.descendants(matching: .any).matching(identifier: "audioToggle").firstMatch
         reveal(audio, in: app)
+        XCTAssertEqual(audio.label, "Record audio")
         XCTAssertEqual(audio.value as? String, "On")
         audio.tap()
         let camera = app.buttons["switchCameraButton"]
