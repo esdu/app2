@@ -244,34 +244,34 @@ final class RollingRecorder: @unchecked Sendable {
                 if case .success(let segment) = result { ProtectedFiles.remove([segment.url]) }
                 return
             }
-            self.deliverCompletion { [self] in queue.async { [self] in
-                guard epoch == generation else {
+            self.deliverCompletion { [self] in self.queue.async { [self] in
+                guard epoch == self.generation else {
                     if case .success(let segment) = result { ProtectedFiles.remove([segment.url]) }
                     return
                 }
-                finalizing.removeValue(forKey: identifier)
-                collection?.finalizers.remove(identifier)
-                pending -= 1
+                self.finalizing.removeValue(forKey: identifier)
+                self.collection?.finalizers.remove(identifier)
+                self.pending -= 1
                 switch result {
                 case .success(let segment):
-                    index.insert(segment)
-                    if let collection {
-                        index.extend(collection.token, startingAt: collection.start, endingAt: collection.target)
+                    self.index.insert(segment)
+                    if let collection = self.collection {
+                        self.index.extend(collection.token, startingAt: collection.start, endingAt: collection.target)
                     }
                     // Save pins boundary segments before any expiration pass.
-                    if !freezing { ProtectedFiles.remove(index.prune(now: lastTimestamp).map(\.url)) }
-                    if index.bytes > index.byteLimit {
+                    if !self.freezing { ProtectedFiles.remove(self.index.prune(now: self.lastTimestamp).map(\.url)) }
+                    if self.index.bytes > self.index.byteLimit {
                         // Leased pre-roll cannot be silently sacrificed to make
                         // a larger requested interval fit the completed quota.
-                        cancelCollection(CameraError.writer("There is not enough temporary storage to preserve this entire moment. Choose a shorter buffer or post-roll."))
-                        fail(CameraError.storage)
+                        self.cancelCollection(CameraError.writer("There is not enough temporary storage to preserve this entire moment. Choose a shorter buffer or post-roll."))
+                        self.fail(CameraError.storage)
                         return
                     }
-                    completeSnapshotIfReady()
-                    completeCollectionIfReady()
+                    self.completeSnapshotIfReady()
+                    self.completeCollectionIfReady()
                 case .failure(let error):
-                    cancelCollection(error)
-                    fail(error)
+                    self.cancelCollection(error)
+                    self.fail(error)
                 }
             } }
         }
