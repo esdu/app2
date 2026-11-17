@@ -65,6 +65,24 @@ in the integrated macOS CI after project regeneration. This branch's focused
 `CameraView` integration requires issue #4's `canSave` and `saveStatus` APIs. No iPhone
 measurements or physical accessibility checks have been performed.
 
+## Post-roll integration (#10)
+
+Apply the post-roll model implementation before the dim countdown follow-up: the
+camera view passes issue #10's optional `CameraModel.postRollRemaining` into
+`DimRecordingView`. While a save is collecting more media, dim mode exposes the
+same rounded-up remaining seconds as the normal camera screen, with a readable
+label, VoiceOver value and `dimPostRollStatus` identifier. The countdown disappears
+when collection finishes; the save label continues to cover export and lease release.
+It does not move accessibility focus or announce every media-time update.
+
+Preserve the integrated thermal startup guards, callback-generation fencing,
+`!saving` in start/preference readiness, global save banner, and dim brightness
+lifecycle hooks when merging issue #10's older model/view context. Check countdown
+visibility and VoiceOver values at large Dynamic Type during a physical post-roll
+save, then verify thermal stop/background/library navigation still restore brightness
+and report either a completed, explicitly shorter, or failed save. Those native and
+physical checks remain pending.
+
 ## Physical iPhone checklist — pending
 
 - iOS 17.0/17.1 touch-only operation, and a newer supported iOS: explicitly start,

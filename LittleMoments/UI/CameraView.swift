@@ -147,6 +147,7 @@ import SwiftUI
                 if dimScreen.isDimmed {
                     DimRecordingView(status: model.status, seconds: model.seconds, battery: dimScreen.battery,
                                      canSave: model.canSave, saving: model.saving, saveStatus: model.saveStatus,
+                                     postRollRemaining: model.postRollRemaining,
                                      save: { model.save() }, wake: { dimScreen.wake() })
                         .background(.black.ignoresSafeArea())
                 }
