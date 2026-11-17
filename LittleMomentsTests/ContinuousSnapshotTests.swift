@@ -188,6 +188,36 @@ final class ContinuousSnapshotTests: XCTestCase {
     }
 
 
+    func testStopAfterCutoffCleansFutureAudioBoundaryOnDeliveryOrCancellation() async throws {
+        for cancel in [false, true] {
+            let gate = Gate(), h = await harness(gate: gate)
+            let source = TimestampedSampleSource()
+            try await h.feed(source, 0..<7)
+            let pending = Task { try await h.experiment.snapshot(.continuousMOV) }
+            try await wait { gate.count == 1 }
+            // While the fixed 0.7s snapshot awaits completion, the future writer
+            // rotates with no microphone watermark. The boundary holds that
+            // writer separately from the finalizer and active writer.
+            try await h.feed(source, 7..<29, audio: false)
+            await h.stop()
+            if cancel {
+                pending.cancel()
+                do { _ = try await pending.value; XCTFail("Canceled stopped request must fail") } catch { }
+                gate.open()
+            } else {
+                gate.open()
+                let snapshot = try await pending.value
+                XCTAssertEqual(snapshot.end, source.origin + 0.7, accuracy: 0.0001)
+                await h.recorder.release(snapshot)
+            }
+            try await wait { try await h.recorder.diagnostics().files.isEmpty }
+            let state = try await h.recorder.diagnostics()
+            XCTAssertFalse(state.running)
+            XCTAssertEqual(state.pending, 0); XCTAssertEqual(state.finalizingWriters, 0)
+            XCTAssertEqual(state.leaseCount, 0)
+        }
+    }
+
     func testExportFailureRemovesStagingAndReleasesCaptureLease() async throws {
         let h = await harness()
         try await h.feed(TimestampedSampleSource(), 0..<7)

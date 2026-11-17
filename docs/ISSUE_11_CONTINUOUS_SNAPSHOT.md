@@ -59,6 +59,11 @@ The new selectors exercise actual `SegmentWriter`, `SegmentIndex`, leases and
 - `testDelayedFinalizationDeadlineAndStopDoNotLeakOrRestart`: withheld completion,
   monotonic timeout, interruption/stop while saving, eventual callback cleanup,
   zero leases and explicit restart requirement.
+- `testStopAfterCutoffCleansFutureAudioBoundaryOnDeliveryOrCancellation`: continue
+  video past a future MOV rotation while a fixed-cutoff save is held; omit audio
+  so the boundary retains a future writer; stop and either deliver or cancel the
+  save. All active, boundary-held and finalizing files must disappear, with no
+  leases or implicit restart.
 - `testLowDiskDuringPendingSaveCleansFinalizersAndLeases`: a low-capacity stop
   during Save, safe finalization/error settlement, release and eventual file cleanup.
 - `testExportFailureRemovesStagingAndReleasesCaptureLease`: actual failed source
