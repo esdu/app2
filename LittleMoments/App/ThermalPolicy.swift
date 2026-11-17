@@ -14,7 +14,7 @@ enum ThermalLevel: CaseIterable, Equatable {
     }
 }
 
-/// Fixed 720p capture has no lower quality mode. Critical pressure requires a pause.
+/// Capture has no automatic thermal quality mode. Critical pressure requires a pause.
 struct ThermalPolicy: Equatable {
     let blocksCapture: Bool
     let warning: String?
@@ -23,7 +23,7 @@ struct ThermalPolicy: Equatable {
         switch state {
         case .nominal, .fair: warning = nil
         case .serious:
-            warning = "This iPhone is getting warm. Capture remains at 720p. Let the device cool if needed."
+            warning = "This iPhone is getting warm. Capture continues at the selected resolution. Let the device cool if needed."
         case .critical:
             warning = "This iPhone is too hot to buffer. Let it cool, then tap Start Buffer."
         }

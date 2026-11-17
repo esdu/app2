@@ -24,7 +24,7 @@ final class ThermalUITests: XCTestCase {
         XCTAssertTrue(app.buttons["bufferButton"].waitForExistence(timeout: 10))
         let warning = app.staticTexts["thermalWarning"]
         reveal(warning, in: app)
-        XCTAssertTrue(warning.label.contains("Capture remains at 720p"))
+        XCTAssertTrue(warning.label.contains("Capture continues at the selected resolution"))
         let start = app.buttons["bufferButton"]
         reveal(start, in: app)
         XCTAssertEqual(start.label, "Start Buffer")

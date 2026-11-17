@@ -81,7 +81,7 @@ private final class ThermalCamera: CameraService {
         }
         let serious = ThermalPolicy(state: .serious)
         XCTAssertFalse(serious.blocksCapture)
-        XCTAssertTrue(serious.warning?.contains("remains at 720p") == true)
+        XCTAssertTrue(serious.warning?.contains("continues at the selected resolution") == true)
         let critical = ThermalPolicy(state: .critical)
         XCTAssertTrue(critical.blocksCapture)
         XCTAssertTrue(critical.warning?.contains("Let it cool") == true)
