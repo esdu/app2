@@ -16,7 +16,7 @@ import SwiftUI
     let camera: CameraService
     let library: ClipLibrary
     let testing: Bool
-    private var foreground = true
+    @Published private var foreground = true
     private var operation = UUID()
     private var transitionCount = 0
     private let preferencesStore: CameraPreferencesStore
