@@ -109,6 +109,38 @@ class SummaryTests(unittest.TestCase):
             self.assertIn("device-diagnostics.zip!logs/LittleMoments.ips", markdown)
             self.assertIn("RollingRecorder.finish()", markdown)
 
+    def test_malformed_crash_records_do_not_discard_test_results(self):
+        malformed = '{"threads": [{"triggered": true, "frames": [null]}]}'
+        for zipped in (False, True):
+            with self.subTest(zipped=zipped), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary)
+                (path / "Stress-2.xcresult").mkdir()
+                (path / "Stress-2.status.json").write_text(json.dumps({"run": "Stress-2", "exitCode": 65}))
+                if zipped:
+                    with zipfile.ZipFile(path / "device.zip", "w") as archive:
+                        archive.writestr("broken.ips", malformed)
+                else:
+                    (path / "broken.ips").write_text(malformed)
+                result = summary.normalize_summary(self.fixture("summary-failure.json"))
+                result.update(run="Stress-2", warnings=[])
+                with mock.patch.object(summary, "collect_bundle", return_value=result):
+                    markdown = summary.create_report(path)
+                self.assertIn("| Stress-2 | 65 | Failed | 11 | 2 | 1 |", markdown)
+                self.assertIn("Could not parse crash report", markdown)
+                saved = json.loads((path / "test-summary.json").read_text())
+                self.assertEqual(saved["runs"]["Stress-2"]["failed"], 2)
+
+    def test_oversized_direct_crash_keeps_original_and_report(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            crash = path / "large.ips"
+            crash.write_text("x" * 33)
+            with mock.patch.object(summary, "CRASH_SUMMARY_LIMIT", 32):
+                markdown = summary.create_report(path)
+            self.assertIn("Crash report exceeds 5 MiB summary limit", markdown)
+            self.assertEqual(crash.read_text(), "x" * 33)
+            self.assertTrue((path / "test-summary.json").exists())
+
     def test_timeout_keeps_partial_extraction_output_and_warning(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "summary.json"

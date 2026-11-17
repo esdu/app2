@@ -9,6 +9,9 @@ import subprocess
 import zipfile
 
 
+CRASH_SUMMARY_LIMIT = 5 * 1024 * 1024
+
+
 def unwrap(value):
     if isinstance(value, dict):
         if "_value" in value:
@@ -52,7 +55,13 @@ def normalize_summary(data):
 
 
 def crash_summary(path):
-    return parse_crash(path.read_text(errors="replace"), path.suffix)
+    # Apply the same bound to reports exported directly and inside device ZIPs.
+    # Read one extra byte so a growing or truncated file cannot bypass the limit.
+    with path.open("rb") as report:
+        raw = report.read(CRASH_SUMMARY_LIMIT + 1)
+    if len(raw) > CRASH_SUMMARY_LIMIT:
+        raise ValueError("Crash report exceeds 5 MiB summary limit")
+    return parse_crash(raw.decode(errors="replace"), path.suffix)
 
 
 def parse_crash(text, suffix):
@@ -187,7 +196,7 @@ def create_report(artifacts, extract_bundles=True):
         if path.is_file() and path.suffix in (".ips", ".crash"):
             try:
                 summary = crash_summary(path)
-            except (ValueError, TypeError, KeyError) as error:
+            except (ValueError, TypeError, KeyError, AttributeError, OSError) as error:
                 summary = f"Could not parse crash report: {error}; inspect original report."
             crashes.append({"path": str(path.relative_to(artifacts)), "summary": summary})
             report += ["", f"### Crash: {inline(path.relative_to(artifacts))}", "", "```text", summary.replace("```", "~~~"), "```"]
@@ -202,10 +211,10 @@ def create_report(artifacts, extract_bundles=True):
                             continue
                         label = f"{path.relative_to(artifacts)}!{entry.filename}"
                         try:
-                            if entry.file_size > 5 * 1024 * 1024:
+                            if entry.file_size > CRASH_SUMMARY_LIMIT:
                                 raise ValueError("Crash report exceeds 5 MiB summary limit")
                             summary = parse_crash(archive.read(entry).decode(errors="replace"), suffix)
-                        except (ValueError, TypeError, KeyError) as error:
+                        except (ValueError, TypeError, KeyError, AttributeError, OSError, RuntimeError) as error:
                             summary = f"Could not parse crash report: {error}; inspect original ZIP."
                         crashes.append({"path": label, "summary": summary})
                         report += ["", f"### Crash: {inline(label)}", "", "```text", summary.replace("```", "~~~"), "```"]
