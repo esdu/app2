@@ -131,19 +131,19 @@ final class RollingRecorder: @unchecked Sendable {
                 if case .success(let segment) = result { ProtectedFiles.remove([segment.url]) }
                 return
             }
-            self.deliverCompletion { [self] in queue.async { [self] in
-                guard epoch == generation else {
+            self.deliverCompletion { [self] in self.queue.async { [self] in
+                guard epoch == self.generation else {
                     if case .success(let segment) = result { ProtectedFiles.remove([segment.url]) }
                     return
                 }
-                pending -= 1
+                self.pending -= 1
                 switch result {
                 case .success(let segment):
-                    index.insert(segment)
+                    self.index.insert(segment)
                     // Save pins boundary segments before any expiration pass.
-                    if !freezing { ProtectedFiles.remove(index.prune(now: lastTimestamp).map(\.url)) }
-                    completeSnapshotIfReady()
-                case .failure(let error): fail(error)
+                    if !self.freezing { ProtectedFiles.remove(self.index.prune(now: self.lastTimestamp).map(\.url)) }
+                    self.completeSnapshotIfReady()
+                case .failure(let error): self.fail(error)
                 }
             } }
         }

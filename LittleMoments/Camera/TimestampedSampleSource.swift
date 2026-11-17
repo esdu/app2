@@ -69,8 +69,14 @@ struct TimestampedSampleSource {
         guard CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: count * 2,
             blockAllocator: nil, customBlockSource: nil, offsetToData: 0, dataLength: count * 2,
             flags: 0, blockBufferOut: &block) == noErr, let block else { throw CameraError.unavailable }
-        let samples: [Int16] = (0..<count).map {
-            Int16(sin((logicalTime + Double($0) / Double(Self.sampleRate)) * frequency * 2 * .pi) * 12_000)
+        let sampleRate = Double(Self.sampleRate)
+        let angularFrequency = frequency * 2.0 * Double.pi
+        var samples: [Int16] = []
+        samples.reserveCapacity(count)
+        for index in 0..<count {
+            let elapsed = logicalTime + Double(index) / sampleRate
+            let amplitude = sin(elapsed * angularFrequency) * 12_000.0
+            samples.append(Int16(amplitude))
         }
         let status = samples.withUnsafeBytes {
             CMBlockBufferReplaceDataBytes(with: $0.baseAddress!, blockBuffer: block,
