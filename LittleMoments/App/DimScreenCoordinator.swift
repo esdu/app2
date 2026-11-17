@@ -184,8 +184,9 @@ private func performOnMain(_ action: @escaping @MainActor () -> Void) {
     deinit {
         let screen = screen, batteryMonitor = batteryMonitor
         let original = originalBrightness, applied = appliedBrightness
-        let dimmed = isDimmed
-        let restore = ownsBrightness && dimmed
+        // Ownership is acquired only by dim() and cleared by wake(); avoid the
+        // actor-isolated @Published accessor from this nonisolated deinitializer.
+        let restore = ownsBrightness
         performOnMain {
             screen.stopObserving()
             if restore, let original, let applied, let current = screen.brightness,
