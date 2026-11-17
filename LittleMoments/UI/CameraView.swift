@@ -176,7 +176,7 @@ import SwiftUI
             DimRecordingView(status: model.status, seconds: model.seconds, battery: dimScreen.battery,
                              canSave: model.canSave, saving: model.saving, saveStatus: model.saveStatus,
                              save: { model.save() }, wake: { dimScreen.wake() })
-                .background(.black.ignoresSafeArea())
+                .background { Color.black.ignoresSafeArea() }
         }
     }
 }
