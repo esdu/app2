@@ -63,6 +63,19 @@ import SwiftUI
                             ForEach(CameraPreferences.supportedDurations, id: \.self) { duration in Text("\(Int(duration))s").tag(duration) }
                         }.pickerStyle(.segmented).accessibilityIdentifier("durationPicker")
                             .disabled(!model.canChangePreferences)
+                        Picker("Keep after Save", selection: Binding(get: { model.postRoll }, set: model.setPostRoll)) {
+                            ForEach(CameraPreferences.supportedPostRolls, id: \.self) { value in
+                                Text(value == 0 ? "Off" : "\(Int(value))s after").tag(value)
+                            }
+                        }.pickerStyle(.segmented).accessibilityIdentifier("postRollPicker")
+                            .disabled(!model.canChangePreferences)
+                    }
+                    if let remaining = model.postRollRemaining {
+                        Text("Keeping \(Int(ceil(remaining))) more seconds…")
+                            .font(.subheadline.monospacedDigit())
+                            .accessibilityLabel("Post-roll remaining")
+                            .accessibilityValue("\(Int(ceil(remaining))) seconds")
+                            .accessibilityIdentifier("postRollStatus")
                     }
                     Button { model.save() } label: {
                         HStack(spacing: 12) {

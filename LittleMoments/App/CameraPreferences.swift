@@ -5,29 +5,34 @@ struct CameraPreferences: Codable, Equatable {
     enum Camera: String, Codable { case rear, front }
 
     static let supportedDurations: [Double] = [15, 30, 60, 120]
+    static let supportedPostRolls: [Double] = [0, 5, 10]
     static let defaults = CameraPreferences()
     var duration: Double = 30
     var audio = true
     var camera: Camera = .rear
+    var postRoll: Double = 0
 
-    init(duration: Double = 30, audio: Bool = true, camera: Camera = .rear) {
+    init(duration: Double = 30, audio: Bool = true, camera: Camera = .rear, postRoll: Double = 0) {
         self.duration = Self.supportedDurations.contains(duration) ? duration : 30
         self.audio = audio
         self.camera = camera
+        self.postRoll = Self.supportedPostRolls.contains(postRoll) ? postRoll : 0
     }
 
-    private enum CodingKeys: String, CodingKey { case duration, audio, camera }
+    private enum CodingKeys: String, CodingKey { case duration, audio, camera, postRoll }
     init(from decoder: Decoder) throws {
         let fields = try decoder.container(keyedBy: CodingKeys.self)
         // Decode independently so an old, corrupt or future field cannot erase valid choices.
         self.init(duration: (try? fields.decode(Double.self, forKey: .duration)) ?? 30,
                   audio: (try? fields.decode(Bool.self, forKey: .audio)) ?? true,
-                  camera: (try? fields.decode(Camera.self, forKey: .camera)) ?? .rear)
+                  camera: (try? fields.decode(Camera.self, forKey: .camera)) ?? .rear,
+                  postRoll: (try? fields.decode(Double.self, forKey: .postRoll)) ?? 0)
     }
 
     func validated() -> CameraPreferences {
         var result = self
         if !Self.supportedDurations.contains(result.duration) { result.duration = 30 }
+        if !Self.supportedPostRolls.contains(result.postRoll) { result.postRoll = 0 }
         return result
     }
 }

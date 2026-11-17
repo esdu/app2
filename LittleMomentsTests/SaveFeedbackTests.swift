@@ -10,6 +10,13 @@ private final class FeedbackCamera: CameraService {
     var snapshots = 0
     var releases = 0
     var segments: [VideoSegment] = []
+    var requestedPostRoll: Double?
+    var partial = false
+    var suspendCollection = false
+    var collection: CheckedContinuation<Void, Never>?
+    var progress: ((Double) -> Void)?
+    var suspendRelease = false
+    var releaseContinuation: CheckedContinuation<Void, Never>?
     func start(audio: Bool, front: Bool, duration: Double) async throws {
         onStatistics?(CameraStatistics(seconds: 2, bytes: 100))
     }
@@ -17,9 +24,17 @@ private final class FeedbackCamera: CameraService {
     func snapshot() async throws -> BufferSnapshot {
         snapshots += 1
         if let snapshotError { throw snapshotError }
-        return BufferSnapshot(token: UUID(), segments: segments, end: 2, window: 30)
+        return BufferSnapshot(token: UUID(), segments: segments, end: 2, window: 30, requestedEnd: partial ? 7 : 2)
     }
-    func release(_ snapshot: BufferSnapshot) async { releases += 1 }
+    func snapshot(postRoll: Double, onProgress: @escaping (Double) -> Void) async throws -> BufferSnapshot {
+        requestedPostRoll = postRoll; progress = onProgress
+        if suspendCollection { await withCheckedContinuation { collection = $0 } }
+        return try await snapshot()
+    }
+    func release(_ snapshot: BufferSnapshot) async {
+        releases += 1
+        if suspendRelease { await withCheckedContinuation { releaseContinuation = $0 } }
+    }
 }
 @MainActor private final class FeedbackSaver: MomentSaving {
     var calls = 0
@@ -75,6 +90,45 @@ private final class FeedbackCamera: CameraService {
     private func start(_ model: CameraModel) async {
         model.start(); await waitUntil { model.canSave }
     }
+    func testPostRollProgressAndOneSaveUntilLeaseRelease() async {
+        let camera = FeedbackCamera(), saver = FeedbackSaver(), feedback = FeedbackRecorder(), scheduler = ManualFeedbackScheduler()
+        camera.suspendCollection = true; camera.suspendRelease = true
+        let subject = model(camera: camera, saver: saver, feedback: feedback, scheduler: scheduler)
+        subject.setPostRoll(10); await start(subject)
+        subject.save(); subject.save()
+        await waitUntil { camera.collection != nil }
+        XCTAssertEqual(camera.requestedPostRoll, 10); XCTAssertEqual(subject.postRollRemaining, 10)
+        camera.progress?(4.2); await waitUntil { subject.postRollRemaining == 4.2 }
+        XCTAssertFalse(subject.canChangePreferences); subject.setPostRoll(5); XCTAssertEqual(subject.postRoll, 10)
+        camera.collection?.resume(); camera.collection = nil
+        await waitUntil { camera.releaseContinuation != nil }
+        XCTAssertTrue(subject.saving); XCTAssertNil(subject.postRollRemaining)
+        subject.save(); XCTAssertEqual(camera.snapshots, 1); XCTAssertEqual(saver.calls, 1)
+        camera.releaseContinuation?.resume(); camera.releaseContinuation = nil
+        await waitUntil { !subject.saving }
+        // A delayed progress callback from collection must not revive the status.
+        camera.progress?(1); await Task.yield(); XCTAssertNil(subject.postRollRemaining)
+        XCTAssertEqual(feedback.haptics, [.success]); XCTAssertEqual(camera.releases, 1)
+    }
+
+    func testBackgroundDuringPostRollDefersShorterFeedbackAndDoesNotResume() async {
+        let camera = FeedbackCamera(), saver = FeedbackSaver(), feedback = FeedbackRecorder(), scheduler = ManualFeedbackScheduler()
+        camera.suspendCollection = true; camera.partial = true
+        let subject = model(camera: camera, saver: saver, feedback: feedback, scheduler: scheduler)
+        subject.setPostRoll(5); await start(subject); subject.save()
+        await waitUntil { camera.collection != nil }
+        subject.setForeground(false)
+        camera.collection?.resume(); camera.collection = nil
+        await waitUntil { !subject.saving && !subject.transitioning }
+        XCTAssertEqual(subject.phase, .paused); XCTAssertNil(subject.saveStatus)
+        XCTAssertTrue(feedback.haptics.isEmpty); XCTAssertTrue(feedback.announcements.isEmpty)
+        XCTAssertEqual(camera.releases, 1)
+        subject.setForeground(true)
+        XCTAssertEqual(subject.phase, .paused)
+        XCTAssertEqual(subject.saveStatus, SaveOutcome.partial.text)
+        XCTAssertEqual(feedback.announcements, [SaveOutcome.partial.text]); XCTAssertTrue(feedback.haptics.isEmpty)
+    }
+
     func testCommittedSavePublishesSuccessOnceAndReleasesLease() async throws {
         let camera = FeedbackCamera(), feedback = FeedbackRecorder(), scheduler = ManualFeedbackScheduler()
         let sourceDirectory = directory(); try ProtectedFiles.directory(sourceDirectory)

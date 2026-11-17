@@ -19,6 +19,10 @@ final class PreferenceUITests: XCTestCase {
         reveal(picker, in: app)
         XCTAssertTrue(picker.buttons["30s"].isSelected)
         picker.buttons["60s"].tap()
+        let postRoll = app.segmentedControls["postRollPicker"]
+        reveal(postRoll, in: app)
+        XCTAssertTrue(postRoll.buttons["Off"].isSelected)
+        postRoll.buttons["5s after"].tap()
         let audio = app.buttons["audioToggle"]
         reveal(audio, in: app)
         XCTAssertEqual(audio.value as? String, "On")
@@ -39,6 +43,8 @@ final class PreferenceUITests: XCTestCase {
         XCTAssertFalse(app.buttons["saveButton"].isEnabled)
         reveal(picker, in: app)
         XCTAssertTrue(picker.buttons["60s"].isSelected)
+        reveal(postRoll, in: app)
+        XCTAssertTrue(postRoll.buttons["5s after"].isSelected)
         reveal(audio, in: app)
         XCTAssertEqual(audio.value as? String, "Off")
         XCTAssertEqual(camera.value as? String, "Front")
@@ -49,6 +55,8 @@ final class PreferenceUITests: XCTestCase {
         XCTAssertTrue(start.waitForExistence(timeout: 10))
         reveal(picker, in: app)
         XCTAssertTrue(picker.buttons["30s"].isSelected)
+        reveal(postRoll, in: app)
+        XCTAssertTrue(postRoll.buttons["Off"].isSelected)
         reveal(audio, in: app)
         XCTAssertEqual(audio.value as? String, "On")
         XCTAssertEqual(camera.value as? String, "Rear")

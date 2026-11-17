@@ -53,12 +53,24 @@ private final class FailingPreferenceStore: CameraPreferencesStore {
         let defaults = disposableDefaults()
         let store = UserDefaultsCameraPreferencesStore(defaults: defaults)
         XCTAssertEqual(try store.load(), CameraPreferences(duration: 30, audio: true, camera: .rear))
-        let selected = CameraPreferences(duration: 120, audio: false, camera: .front)
+        let selected = CameraPreferences(duration: 120, audio: false, camera: .front, postRoll: 10)
         try store.save(selected)
         XCTAssertEqual(try UserDefaultsCameraPreferencesStore(defaults: defaults).load(), selected)
         let data = try XCTUnwrap(defaults.data(forKey: UserDefaultsCameraPreferencesStore.storageKey))
         let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(Set(fields.keys), Set(["duration", "audio", "camera"]))
+        XCTAssertEqual(Set(fields.keys), Set(["duration", "audio", "camera", "postRoll"]))
+    }
+
+    func testPostRollChoicesValidateAndOldRecordsRemainOff() throws {
+        for value in [0.0, 5, 10] {
+            let encoded = try JSONEncoder().encode(CameraPreferences(postRoll: value))
+            XCTAssertEqual(try JSONDecoder().decode(CameraPreferences.self, from: encoded).postRoll, value)
+        }
+        for value in [-1.0, 1, 30, .infinity, .nan] {
+            XCTAssertEqual(CameraPreferences(postRoll: value).postRoll, 0)
+        }
+        let old = Data(#"{"duration":60,"audio":false,"camera":"front"}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(CameraPreferences.self, from: old).postRoll, 0)
     }
 
     func testInvalidFieldsFallBackIndependently() throws {
@@ -119,7 +131,7 @@ private final class FailingPreferenceStore: CameraPreferencesStore {
         let store = MemoryCameraPreferencesStore()
         let subject = model(store: store)
         func attemptChanges() {
-            subject.setDuration(120); subject.setAudio(false); subject.switchCamera()
+            subject.setDuration(120); subject.setAudio(false); subject.switchCamera(); subject.setPostRoll(10)
             XCTAssertEqual(subject.preferences, .defaults)
         }
         subject.start(); attemptChanges()

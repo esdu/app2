@@ -73,6 +73,21 @@ final class SegmentIndexTests: XCTestCase {
         for start in [0.0, 2, 4, 6] { index.insert(segment(start, start + 2)) }
         XCTAssertEqual(index.pin(endingAt: 6).1.map(\.start), [2, 4])
     }
+    func testFutureLeaseExtendsBeforeEvictionWithoutMovingOriginalStart() {
+        var index = SegmentIndex(); index.window = 4
+        index.insert(segment(0, 2)); index.insert(segment(2, 4))
+        let (token, _) = index.pin(startingAt: 1, endingAt: 9)
+        for start in [4.0, 6, 8, 10] {
+            index.insert(segment(start, start + 2))
+            index.extend(token, startingAt: 1, endingAt: 9)
+            _ = index.prune(now: start + 2)
+        }
+        XCTAssertEqual(index.selection(for: token).map(\.start), [0, 2, 4, 6, 8])
+        XCTAssertEqual(index.leaseCount, 1)
+        index.release(token); _ = index.prune(now: 20)
+        XCTAssertEqual(index.leaseCount, 0); XCTAssertTrue(index.segments.isEmpty)
+    }
+
     func testInvalidAndDuplicateSegmentsRejected() {
         var index = SegmentIndex(); let valid = segment(0, 2)
         index.insert(valid); index.insert(valid); index.insert(segment(2, 1)); index.insert(segment(.nan, 2))

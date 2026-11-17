@@ -106,3 +106,5 @@ Buffers and clips use complete iOS file protection and are excluded from backup.
 - Dynamic Type and VoiceOver are implemented with standard controls but still need physical accessibility review.
 
 Use the [physical iPhone checklist](docs/PHYSICAL_TESTING.md), [test evidence](docs/VALIDATION.md), and [future roadmap](docs/ROADMAP.md) before shipping.
+
+Opt-in [post-roll](docs/ISSUE_10_POST_ROLL.md) keeps 5 or 10 seconds after Save while preserving the selected pre-trigger history; Off remains the default. Stopping capture can save an explicitly labeled shorter moment.
