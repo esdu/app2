@@ -1,5 +1,15 @@
 import AVFoundation
+import Foundation
 import SwiftUI
+
+/// Capture callbacks originate off-main. Capture their lifecycle at invocation,
+/// before hopping to MainActor, so queued events cannot affect a later start.
+private final class CaptureCallbackGeneration: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = UUID()
+    var current: UUID { lock.withLock { value } }
+    func invalidate() { lock.withLock { value = UUID() } }
+}
 
 @MainActor final class CameraModel: ObservableObject {
     @Published private(set) var preferences: CameraPreferences
@@ -32,6 +42,7 @@ import SwiftUI
     private let thermalMonitor: ThermalMonitoring
     private var stoppedStartupOperation: UUID?
     private var stopping = false
+    private let callbackGeneration = CaptureCallbackGeneration()
 
     init(camera: CameraService, library: ClipLibrary, testing: Bool = false,
          preferencesStore: CameraPreferencesStore = MemoryCameraPreferencesStore(),
@@ -54,22 +65,32 @@ import SwiftUI
         self.feedbackScheduler = feedbackScheduler ?? TaskFeedbackScheduler()
         message = preferencesError
         monitor.onChange = { [weak self] in self?.refreshThermalState() }
-        camera.onStatistics = { [weak self] statistics in Task { @MainActor in
-            guard let self else { return }
-            // A stopped recorder may still report leased bytes while a save drains.
-            // Its old ready duration must never enable a new save after capture exits.
-            self.bytes = statistics.bytes
-            self.seconds = self.phase == .buffering || self.phase == .starting ? statistics.seconds : 0
-        } }
-        camera.onInterruption = { [weak self] reason in Task { @MainActor in
-            guard let self, self.phase == .buffering || self.phase == .starting else { return }
-            self.operation = UUID(); self.phase = .paused; self.seconds = 0; self.message = reason
-        } }
+        let callbackGeneration = self.callbackGeneration
+        camera.onStatistics = { [weak self] statistics in
+            let token = callbackGeneration.current
+            Task { @MainActor in
+                guard let self, callbackGeneration.current == token else { return }
+                // A stopped recorder may still report leased bytes while a save drains.
+                // Its old ready duration must never enable a new save after capture exits.
+                self.bytes = statistics.bytes
+                self.seconds = self.phase == .buffering || self.phase == .starting ? statistics.seconds : 0
+            }
+        }
+        camera.onInterruption = { [weak self] reason in
+            let token = callbackGeneration.current
+            Task { @MainActor in
+                guard let self, callbackGeneration.current == token,
+                      self.phase == .buffering || self.phase == .starting else { return }
+                callbackGeneration.invalidate()
+                self.operation = UUID(); self.phase = .paused; self.seconds = 0; self.message = reason
+            }
+        }
         do { try library.load() } catch { message = error.localizedDescription }
     }
     func start() {
         refreshThermalState()
         guard canStart else { return }
+        callbackGeneration.invalidate()
         seconds = 0
         beginTransition(); phase = .starting
         let token = UUID(); operation = token
@@ -101,6 +122,7 @@ import SwiftUI
     func stop(paused: Bool = false) {
         let needsStop = phase == .buffering || phase == .starting
         if phase == .starting { stoppedStartupOperation = operation }
+        callbackGeneration.invalidate()
         operation = UUID()
         phase = paused ? .paused : .stopped
         seconds = 0
