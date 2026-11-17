@@ -96,4 +96,32 @@ private final class ControlledCamera: CameraService {
         model.save(); await waitUntil { !model.saving }
         XCTAssertFalse(model.saving); XCTAssertNotNil(model.message)
     }
+    func testLateInterruptionCannotReplaceStoppedStateOrActionableError() async {
+        let camera = ControlledCamera(); let model = makeModel(camera)
+        model.start(); await waitUntil { !model.transitioning }
+        model.stop(); await waitUntil { !model.transitioning }
+        model.message = "Keep this actionable error"
+        camera.onInterruption?("Late interruption")
+        // Statistics provide an observable fence after the queued callbacks.
+        camera.onStatistics?(CameraStatistics(seconds: 2, bytes: 321))
+        await waitUntil { model.bytes == 321 }
+        XCTAssertEqual(model.phase, .stopped)
+        XCTAssertEqual(model.message, "Keep this actionable error")
+        XCTAssertEqual(model.seconds, 0)
+        XCTAssertFalse(model.canSave)
+    }
+    func testNewCaptureWaitsForFreshStatisticsEvenIfServiceDoesNotPublishOnStop() async {
+        let camera = ControlledCamera(); let model = makeModel(camera)
+        model.start(); await waitUntil { !model.transitioning }
+        camera.onStatistics?(CameraStatistics(seconds: 2, bytes: 100))
+        await waitUntil { model.canSave }
+        model.stop(); await waitUntil { !model.transitioning }
+        XCTAssertEqual(model.seconds, 0)
+        model.start(); await waitUntil { !model.transitioning }
+        XCTAssertEqual(model.phase, .buffering)
+        XCTAssertFalse(model.canSave)
+        camera.onStatistics?(CameraStatistics(seconds: 1, bytes: 50))
+        await waitUntil { model.canSave }
+        XCTAssertEqual(model.seconds, 1)
+    }
 }

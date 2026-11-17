@@ -55,16 +55,22 @@ import SwiftUI
         message = preferencesError
         monitor.onChange = { [weak self] in self?.refreshThermalState() }
         camera.onStatistics = { [weak self] statistics in Task { @MainActor in
-            self?.seconds = statistics.seconds; self?.bytes = statistics.bytes
+            guard let self else { return }
+            // A stopped recorder may still report leased bytes while a save drains.
+            // Its old ready duration must never enable a new save after capture exits.
+            self.bytes = statistics.bytes
+            self.seconds = self.phase == .buffering || self.phase == .starting ? statistics.seconds : 0
         } }
         camera.onInterruption = { [weak self] reason in Task { @MainActor in
-            self?.operation = UUID(); self?.phase = .paused; self?.message = reason
+            guard let self, self.phase == .buffering || self.phase == .starting else { return }
+            self.operation = UUID(); self.phase = .paused; self.seconds = 0; self.message = reason
         } }
         do { try library.load() } catch { message = error.localizedDescription }
     }
     func start() {
         refreshThermalState()
         guard canStart else { return }
+        seconds = 0
         beginTransition(); phase = .starting
         let token = UUID(); operation = token
         Task {
@@ -97,6 +103,7 @@ import SwiftUI
         if phase == .starting { stoppedStartupOperation = operation }
         operation = UUID()
         phase = paused ? .paused : .stopped
+        seconds = 0
         guard needsStop, !stopping else { return }
         stopping = true
         beginTransition()
