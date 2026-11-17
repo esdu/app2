@@ -254,8 +254,11 @@ final class AudioBoundaryTests: XCTestCase {
         }
         func threshold(for boundary: Int) -> Double {
             let base = boundary * Self.binsPerBoundary
-            let reference = (0..<Self.binsPerBoundary).filter { $0 < 10 || $0 >= 49 }
-                .map { bins[base + $0].rms }.sorted()
+            var reference: [Double] = []
+            for bin in 0..<Self.binsPerBoundary where bin < 10 || bin >= 49 {
+                reference.append(bins[base + bin].rms)
+            }
+            reference.sort()
             // Compare with nearby decoded tone as well as a conservative absolute
             // floor; timestamp-contiguous inserted silence must not pass.
             return max(2_500, reference[reference.count / 2] * 0.4)
@@ -269,15 +272,22 @@ final class AudioBoundaryTests: XCTestCase {
 
     func testBoundaryProbeDetectsTimestampContinuousFifteenMillisecondSilence() {
         let start = 1.96
-        let tone: [Int16] = (0..<3_528).map {
-            Int16(sin(Double($0) / 44_100 * 600 * 2 * .pi) * 12_000)
+        let sampleRate: Double = 44_100.0
+        let angularFrequency: Double = 600.0 * 2.0 * Double.pi
+        var tone: [Int16] = []
+        tone.reserveCapacity(3_528)
+        for sample in 0..<3_528 {
+            let elapsed: Double = Double(sample) / sampleRate
+            let amplitude: Double = sin(elapsed * angularFrequency) * 12_000.0
+            tone.append(Int16(amplitude))
         }
         var continuous = BoundaryProbe(boundaries: [2])
         continuous.add(tone, startingAt: start)
         XCTAssertTrue(continuous.lowEnergyBins(for: 0).isEmpty)
         var padded = tone
-        for index in padded.indices where abs(start + Double(index) / 44_100 - 2) < 0.0075 {
-            padded[index] = 0
+        for index in padded.indices {
+            let time: Double = start + Double(index) / sampleRate
+            if abs(time - 2.0) < 0.0075 { padded[index] = 0 }
         }
         var gap = BoundaryProbe(boundaries: [2])
         gap.add(padded, startingAt: start)
@@ -310,11 +320,13 @@ final class AudioBoundaryTests: XCTestCase {
         for boundary in probe.boundaries.indices {
             let threshold = probe.threshold(for: boundary)
             let base = boundary * BoundaryProbe.binsPerBoundary
-            timing.append("rollover \(probe.boundaries[boundary]) threshold=\(threshold), bins=" +
-                (0..<BoundaryProbe.binsPerBoundary).map {
-                    let bin = probe.bins[base + $0]
-                    return "\($0):count=\(bin.count),rms=\(bin.rms)"
-                }.joined(separator: ";"))
+            var descriptions: [String] = []
+            for index in 0..<BoundaryProbe.binsPerBoundary {
+                let bin = probe.bins[base + index]
+                descriptions.append("\(index):count=\(bin.count),rms=\(bin.rms)")
+            }
+            let binSummary = descriptions.joined(separator: ";")
+            timing.append("rollover \(probe.boundaries[boundary]) threshold=\(threshold), bins=\(binSummary)")
             for bin in 0..<BoundaryProbe.binsPerBoundary {
                 let result = probe.bins[base + bin]
                 XCTAssertGreaterThanOrEqual(result.count, 85, "Missing PCM near rollover \(boundary + 1), bin \(bin)")
