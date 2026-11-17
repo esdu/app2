@@ -2,7 +2,7 @@
 
 [![iOS CI](https://github.com/esdu/app2/actions/workflows/ios-ci.yml/badge.svg)](https://github.com/esdu/app2/actions/workflows/ios-ci.yml)
 
-Verified simulator build: **28 unit/integration tests and 5 UI tests passed**, zero failures. [Successful run and artifacts](https://github.com/esdu/app2/actions/runs/43955515633) · [Validation details](docs/VALIDATION.md). Physical iPhone testing remains outstanding.
+Last verified baseline (`87bf16a`): **28 unit/integration tests and 5 UI tests passed**, zero failures. The current issue branches add tests and behavior that require new native validation; see the [acceptance ledger](docs/ISSUE_ACCEPTANCE_LEDGER.md). [Successful run and artifacts](https://github.com/esdu/app2/actions/runs/43955515633) · [Validation details](docs/VALIDATION.md). Physical iPhone testing remains outstanding.
 
 A local-first iPhone camera for keeping the moment just before you tap **SAVE MOMENT**. Requires iOS 17+. Start a short rolling buffer, stay present, and save a spontaneous moment to a private local clip library.
 
@@ -11,9 +11,11 @@ A local-first iPhone camera for keeping the moment just before you tap **SAVE MO
 ## Features
 
 - Native SwiftUI camera preview, rear/front camera selection, microphone toggle, and explicit start/stop.
-- 15, 30 (default), 60, or 120 seconds of retrospective video.
+- 15, 30 (default), 60, or 120 seconds of retrospective video. Camera, audio, and duration preferences persist; recording always launches stopped.
 - H.264 video and optional AAC audio in two-second compressed MOV segments.
-- Prominent save button, buffer status, duration, and approximate temporary storage display.
+- Prominent save button, buffer status, duration, and approximate temporary storage display. Completed saves use accessible nonmodal feedback and an outcome haptic.
+- Optional dim screen with touch Save/Wake and battery/charging status. Public hardware capture-button support is gated to iOS 17.2+ and requires physical validation.
+- Serious thermal warning and critical-temperature pause, with explicit restart after cooling.
 - Trimmed MP4 export into an independent persistent local library.
 - Playback, system share sheet, optional add-only Photos export, and confirmed deletion.
 - Foreground and interruption handling with no automatic recording restart.
@@ -29,13 +31,14 @@ A local-first iPhone camera for keeping the moment just before you tap **SAVE MO
 5. Tap **Start Buffer**, grant camera/microphone access, and wait for the buffer. System permission dialogs may make the app inactive; if so, explicitly tap Start Buffer again after granting permission. Disable audio before starting if you do not want microphone access.
 6. Tap **SAVE MOMENT**. The first clip may be shorter than the selected duration while the buffer warms up. Opening the library stops and clears the expendable buffer, but never deletes saved clips.
 
-Camera, audio, and duration can be changed while stopped. Camera switching deliberately requires stopping first, keeping orientation and audio configuration consistent within a buffer. The MVP records portrait 720p H.264 (4 Mbps target), AAC mono audio when enabled.
+Camera, audio, and duration can be changed while stopped. Camera switching deliberately requires stopping first, keeping orientation and audio configuration consistent within a buffer. Capture selects a supported 720p30 format, with a smaller 30 fps format or BGRA fallback when needed, and validates delivered portrait samples. H.264 uses a 4 Mbps target, with AAC mono audio when enabled. Format logs report the effective choice; physical cadence/color/performance checks remain pending.
 
 ## Architecture
 
 | Component | Responsibility |
 | --- | --- |
-| `CaptureEngine` | Serial AVFoundation configuration and sample delivery, foreground stop, camera interruption handling, bounded writer count |
+| `CaptureEngine` | Serial AVFoundation configuration, delivered-format checks, sample delivery, foreground stop and interruption handling |
+| `RollingRecorder` | Queue-confined segment rotation, bounded encoding, watchdog/storage checks, source leases and snapshots |
 | `SegmentWriter` | Real-time H.264/AAC encoding, per-stream monotonic timestamp validation, shared capture-clock session |
 | `SegmentIndex` | Ordered metadata, duration/byte eviction, leases protecting files during save |
 | `ProtectedFiles` | Protected directories, file size accounting, expendable-file deletion |
@@ -89,12 +92,13 @@ The project generator is optional: after adding Swift files, run `python3 script
 
 Video and audio stay on-device. Camera access is requested only on an explicit start; microphone access only when audio is enabled; Photos add-only access only on export. No network client, background capture mode, account system, advertising, or analytics is included. System share and Photos exports occur only when chosen by the user. The system camera/microphone indicators and in-app status show active capture.
 
-Buffers and clips use complete iOS file protection and are excluded from backup. Saved clips survive app restarts but **not app deletion**; export irreplaceable clips. Cache files are disposable and cleaned at startup. The privacy manifest declares app-owned file timestamp access (`C617.1`), disk-capacity checks (`E174.1`), and System Boot Time access (`35F9.1`) for the watchdog and storage-check intervals. Uptime is used only for elapsed-time calculations inside the app. [Privacy declaration and archive validation](docs/PRIVACY_VALIDATION.md). Exported Photos items and copies shared to other apps follow those apps' storage policies.
+Buffers and clips use complete iOS file protection and are excluded from backup. Saved clips survive app restarts but **not app deletion**; export irreplaceable clips. Cache files are disposable and cleaned at startup. The privacy manifest declares app-owned file timestamp access (`C617.1`), disk-capacity checks (`E174.1`), System Boot Time access (`35F9.1`) for the watchdog and storage-check intervals, and app-owned preferences via User Defaults (`CA92.1`). Uptime is used only for elapsed-time calculations inside the app. [Privacy declaration and archive validation](docs/PRIVACY_VALIDATION.md). Exported Photos items and copies shared to other apps follow those apps' storage policies.
 
 ## Known limitations and physical testing
 
 - Hardware camera/microphone testing must be completed on an iPhone; no such testing is claimed by simulator CI.
-- Portrait, fixed 720p/4 Mbps H.264, wide-angle front/rear camera only. No zoom, lens selection, background capture, Watch app, voice trigger, volume-button interception, or post-trigger recording.
+- Portrait, 720p30 target/4 Mbps H.264, wide-angle front/rear camera only, with supported format fallback. No zoom, lens selection, background capture, Watch app, or voice trigger. Hardware capture-button behavior still needs physical validation.
+- Passthrough export and continuous snapshot comparisons are internal evaluations; highest-quality export and the established recorder remain the defaults. 1080p30 is no-go pending the documented gates; 4K/60 and voice remain deferred.
 - Start again after interruptions, backgrounding, device lock, permission prompts that interrupt startup, or visiting the library. Unsaved buffer content is expendable.
 - Save may briefly interrupt incoming frames during segment finalization. Low-resource encoders can drop late frames or stop with a visible error.
 - Saved clips have no automatic size quota; low disk space may prevent save. Delete unwanted clips or export them manually.
