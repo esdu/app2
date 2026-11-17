@@ -1,0 +1,12 @@
+{
+  "title": "Stress-2",
+  "result": "Failed",
+  "totalTestCount": 14,
+  "passedTests": 11,
+  "failedTests": 2,
+  "skippedTests": 1,
+  "testFailures": [
+    {"testName": "CameraModelTests.testStopDuringStart()", "testIdentifier": "CameraModelTests/testStopDuringStart()", "failureText": "XCTAssertEqual failed: stale completion crossed generation"},
+    {"testName": "MediaIntegrationTests.testWriter()", "failureText": "Test crashed: LittleMoments exited unexpectedly"}
+  ]
+}

@@ -1,0 +1,2 @@
+{"app_name":"LittleMoments","bug_type":"309"}
+{"procName":"LittleMoments","exception":{"type":"EXC_CRASH","signal":"SIGABRT"},"faultingThread":1,"threads":[{"frames":[{"symbol":"unrelated"}]},{"triggered":true,"frames":[{"symbol":"__pthread_kill"},{"symbol":"RollingRecorder.finish()"},{"imageIndex":1,"imageOffset":400}]}]}
