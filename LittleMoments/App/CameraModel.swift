@@ -11,15 +11,30 @@ import SwiftUI
     @Published private(set) var transitioning = false
     @Published private(set) var saving = false
     @Published var message: String?
+    @Published private(set) var saveStatus: String?
+    @Published private(set) var foreground = true
+    @Published private(set) var cameraScreenVisible = true
     let camera: CameraService
     let library: ClipLibrary
     let testing: Bool
-    private var foreground = true
+    private let saver: any MomentSaving
+    private let haptics: any SaveHaptics
+    private let announcer: any SaveAnnouncing
+    private let feedbackScheduler: any FeedbackScheduling
+    private var feedbackDismissal: (any FeedbackCancellation)?
+    private var feedbackToken = UUID()
+    private var pendingSaveOutcome: SaveOutcome?
     private var operation = UUID()
     private var transitionCount = 0
 
-    init(camera: CameraService, library: ClipLibrary, testing: Bool = false) {
+    init(camera: CameraService, library: ClipLibrary, testing: Bool = false,
+         saver: (any MomentSaving)? = nil, haptics: (any SaveHaptics)? = nil,
+         announcer: (any SaveAnnouncing)? = nil, feedbackScheduler: (any FeedbackScheduling)? = nil) {
         self.camera = camera; self.library = library; self.testing = testing
+        self.saver = saver ?? library
+        self.haptics = haptics ?? SystemSaveHaptics()
+        self.announcer = announcer ?? VoiceOverSaveAnnouncer()
+        self.feedbackScheduler = feedbackScheduler ?? TaskFeedbackScheduler()
         camera.onStatistics = { [weak self] statistics in Task { @MainActor in
             self?.seconds = statistics.seconds; self?.bytes = statistics.bytes
         } }
@@ -56,21 +71,57 @@ import SwiftUI
     }
     func setForeground(_ active: Bool) {
         foreground = active
-        if !active { stop(paused: phase == .buffering || phase == .starting || phase == .paused) }
+        if !active {
+            clearSaveStatus()
+            stop(paused: phase == .buffering || phase == .starting || phase == .paused)
+        } else if let outcome = pendingSaveOutcome {
+            pendingSaveOutcome = nil
+            presentSaveOutcome(outcome, playHaptics: false)
+        }
     }
     func switchCamera() { guard phase != .buffering, !transitioning else { return }; front.toggle() }
+    func setCameraScreenVisible(_ visible: Bool) { cameraScreenVisible = visible }
+    var canSave: Bool {
+        foreground && cameraScreenVisible && !transitioning && phase == .buffering && seconds > 0 && !saving
+    }
     func save() {
-        guard !saving, phase == .buffering else { return }
+        guard canSave else { return }
         saving = true
         Task {
+            let outcome: SaveOutcome
             do {
                 let snapshot = try await camera.snapshot()
-                do { try await library.save(snapshot); message = "Moment saved to your library." }
-                catch { message = error.localizedDescription }
+                do { try await saver.save(snapshot); outcome = .success }
+                catch { outcome = .failure(error.localizedDescription) }
                 await camera.release(snapshot)
-            } catch { message = error.localizedDescription }
+            } catch { outcome = .failure(error.localizedDescription) }
             saving = false
+            if foreground { presentSaveOutcome(outcome, playHaptics: true) }
+            else { pendingSaveOutcome = outcome }
         }
+    }
+    private func presentSaveOutcome(_ outcome: SaveOutcome, playHaptics: Bool) {
+        if playHaptics { haptics.notify(outcome) }
+        announcer.announce(outcome.text)
+        switch outcome {
+        case .success:
+            clearSaveStatus()
+            saveStatus = outcome.text
+            let token = feedbackToken
+            feedbackDismissal = feedbackScheduler.schedule(after: .seconds(5)) { [weak self] in
+                guard let self, self.feedbackToken == token else { return }
+                self.clearSaveStatus()
+            }
+        case .failure(let reason):
+            clearSaveStatus()
+            message = reason
+        }
+    }
+    private func clearSaveStatus() {
+        feedbackToken = UUID()
+        feedbackDismissal?.cancel()
+        feedbackDismissal = nil
+        saveStatus = nil
     }
     var status: String {
         switch phase {
