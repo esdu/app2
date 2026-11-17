@@ -206,7 +206,7 @@ import SwiftUI
                              canSave: model.canSave, saving: model.saving, saveStatus: model.saveStatus,
                              postRollRemaining: model.postRollRemaining,
                              save: { model.save() }, wake: { dimScreen.wake() })
-                .background(.black.ignoresSafeArea())
+                .background { Color.black.ignoresSafeArea() }
         }
     }
 }
