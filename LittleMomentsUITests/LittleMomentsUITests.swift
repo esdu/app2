@@ -28,7 +28,13 @@ final class LittleMomentsUITests: XCTestCase {
                       "Control must be fully visible before tapping")
     }
     private func start() {
-        let button = app.buttons["bufferButton"]; reveal(button); button.tap()
+        let button = app.buttons["bufferButton"]; reveal(button)
+        // A paused label can appear before foreground activation and the previous
+        // stop have finished. A tap on a disabled control is silently ignored.
+        let ready = NSPredicate(format: "enabled == true AND label == %@", "Start Buffer")
+        expectation(for: ready, evaluatedWith: button)
+        waitForExpectations(timeout: 20)
+        button.tap()
         let active = NSPredicate(format: "label == %@", "Stop Buffer")
         expectation(for: active, evaluatedWith: button)
         waitForExpectations(timeout: 20)
