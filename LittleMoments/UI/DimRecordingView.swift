@@ -8,6 +8,7 @@ struct DimRecordingView: View {
     let canSave: Bool
     let saving: Bool
     let saveStatus: String?
+    let postRollRemaining: Double?
     let save: () -> Void
     let wake: () -> Void
     var body: some View {
@@ -20,6 +21,13 @@ struct DimRecordingView: View {
                 Text("\(Int(seconds)) seconds ready")
                     .font(.title.monospacedDigit()).accessibilityIdentifier("dimReady")
                 Text(battery.text).font(.body).accessibilityIdentifier("dimBattery")
+                if saving, let remaining = postRollRemaining, remaining > 0 {
+                    Text("Keeping \(Int(ceil(remaining))) more seconds…")
+                        .font(.body.monospacedDigit())
+                        .accessibilityLabel("Post-roll remaining")
+                        .accessibilityValue("\(Int(ceil(remaining))) seconds")
+                        .accessibilityIdentifier("dimPostRollStatus")
+                }
                 if let saveStatus {
                     Text(saveStatus).font(.headline).accessibilityIdentifier("dimSaveStatus")
                 }
