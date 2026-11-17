@@ -2,7 +2,9 @@
 
 This is the acceptance inventory for [app2 #15](https://github.com/esdu/app2/issues/15),
 reviewed against the supplied #2–#15 issue snapshot and integration commit
-`9da97e1` on 2026-11-17. It records scoped deliverables and remaining evidence; it
+`9da97e1`, with subsequent CI evidence through `38a5f3d` and unvalidated
+source corrections through `4b5cfd9`, on 2026-11-17.
+It records scoped deliverables and remaining evidence; it
 does not change GitHub issue states. #15 remains the open rollup tracker.
 
 The dependency graph, implementation gates and shared-file merge order live in
@@ -12,7 +14,8 @@ not establish that its dependency's acceptance tests passed. In particular, the
 
 ## Evidence boundary
 
-CI status snapshot: 2026-11-17 14:50 UTC; queued/running states are not final results.
+CI status snapshot: 2026-11-17 15:01 UTC. Results apply to their recorded commits;
+an independent branch pass does not validate the combined integration.
 
 - The first integration [native run 44104753849](https://github.com/esdu/app2/actions/runs/44104753849)
   at `2575db6` **failed during compilation** on the actor-isolated autoclosure in
@@ -21,21 +24,42 @@ CI status snapshot: 2026-11-17 14:50 UTC; queued/running states are not final re
   diagnostics/artifact upload succeeded. Diagnostics reported missing tests and
   unavailable counts rather than invented results; they do not turn this
   iteration green.
-- Commit `0d39349` snapshots dim state before that restoration decision. The next
+- Commit `0d39349` changes the original dim restoration expression. Superseded
   integration [run 44106794217](https://github.com/esdu/app2/actions/runs/44106794217)
-  at `9da97e1` is **queued** at this snapshot. The fix and newly registered suites
-  are not yet validated by a completed native run. The failed iteration remains
-  recorded independently.
+  at `9da97e1` was **cancelled**, not passed.
+- The newer integration [run 44107903119](https://github.com/esdu/app2/actions/runs/44107903119)
+  at `38a5f3d` also **failed compilation**: `DimScreenCoordinator.swift:187`
+  reads main-actor `isDimmed` from a nonisolated deinitializer. The deferred
+  simulator boot, tests, stress, built-app privacy and archive steps were skipped;
+  diagnostics and artifact upload ran. The original expression change therefore
+  is not a verified compilation fix. Later source correction `4b5cfd9` changes
+  stored dim ownership; it has no native result recorded here. No combined
+  integration test pass exists.
+- Independent feedback [run 44105073595](https://github.com/esdu/app2/actions/runs/44105073595)
+  at `0bb2497` **passed**: 36 unit/integration tests, including eight
+  `SaveFeedbackTests`, and five UI tests; built-app privacy validation and unsigned
+  Release archive/privacy validation passed. This is evidence for that focused
+  feedback head, not the later recorder/post-roll/quality integration.
 - Independent preferences [run 44104742324](https://github.com/esdu/app2/actions/runs/44104742324)
-  at `1d6bef3` compiled the app/tests and passed built-app privacy validation.
-  Tests are **in progress**, with archive still pending; no passing test result
-  or combined-integration result is claimed.
+  at `1d6bef3` **failed**. All 36 unit/integration tests (including eight
+  `PreferenceTests`) and five baseline UI tests passed; the additional relaunch
+  `PreferenceUITests` case failed its line 64 assertion while looking up
+  `audioToggle` as a Button. Source correction `22a97a3` changes that UI query;
+  its native result is pending. Built-app and
+  unsigned archive privacy checks passed; they do not make the failing test green.
+- Independent recorder [run 44104835233](https://github.com/esdu/app2/actions/runs/44104835233)
+  at `85a64c7` **failed compilation**: nested `RollingRecorder` completion closures
+  require explicit `self`, and the compiler could not type-check the PCM expression
+  at `TimestampedSampleSource.swift:72`. Built-app privacy, tests and archive were
+  skipped. Source correction `a0c1482` adds explicit `self` and simplifies PCM
+  generation; its native result is pending. No recorder test pass is claimed.
 - Child notes report Linux source/privacy/diff checks and, for #14, Python fixture
   tests. These establish only their stated checks, not AVFoundation execution.
 - [VALIDATION.md](VALIDATION.md) and [PRIVACY_VALIDATION.md](PRIVACY_VALIDATION.md)
   cite successful CI for the earlier `87bf16a` baseline. That evidence does not
-  validate this integration or its added User Defaults declaration. Source,
-  built-app and unsigned-archive privacy checks must run again for the final head.
+  validate this integration. Focused preferences/feedback runs provide newer
+  packaging evidence for their own heads; source, built-app and unsigned-archive
+  privacy checks must still pass for the final integrated head.
 - No physical iPhone run, hardware-button delivery, brightness restoration,
   haptic/VoiceOver device check, thermal/energy measurement or signed distribution
   validation is claimed. [PHYSICAL_TESTING.md](PHYSICAL_TESTING.md) remains pending.
@@ -53,11 +77,11 @@ Focused PR links identify review scope, not a passed CI run or merged change.
 
 | Issue | Integrated implementation or assessment | Native/software acceptance still needed | Physical or other acceptance still needed | Honest closure status |
 | --- | --- | --- | --- | --- |
-| [#2](https://github.com/esdu/app2/issues/2) · [PR #19](https://github.com/esdu/app2/pull/19) | Production `RollingRecorder` ingestion seam, deterministic timestamped A/V source, rotation/leases/library tests and diagnostics; independent 10 ms PCM boundary/leading/lagging-delivery coverage. [Harness note](ISSUE_2_RECORDER_HARNESS.md). | Execute `RollingRecorderTests`, `CameraModelTests` and media tests: all four 300-second logical retention windows with audio on/off, decoded endpoints/counts/audio markers, rollover/warmup/repeated saves, lifecycle/failure/watchdog and cleanup. Retain failed media/timing evidence. Run the added `AudioBoundaryTests` for session-start PCM trimming and independent leading/lagging packet delivery across rollovers; these assertions are not yet observed results. | Real camera cadence/orientation, microphone negotiation, interruption/protected-data behavior and sustained pressure/storage runs. Low-resolution accelerated fixtures establish no device performance. | Implementation present; acceptance pending native and separate device checks. Keep open. |
-| [#3](https://github.com/esdu/app2/issues/3) · [PR #17](https://github.com/esdu/app2/pull/17) | Typed, versioned, tolerant preference store; guarded model updates; disposable test domains; CA92.1 declaration. [Preferences note](ISSUE_3_PREFERENCES.md). | Independent branch compilation/built privacy passed; tests are still running (see run above). Obtain completed `PreferenceTests`, `PreferenceUITests` and existing permission/startup cancellation results for the final integrated head. Verify stopped relaunch and no permission/capture request; validate source/built/archive manifests with the new declaration. | No feature-specific hardware benchmark required; retain the shared release/privacy gates. | Implementation present; pending native evidence. Keep open until scoped acceptance passes. |
-| [#4](https://github.com/esdu/app2/issues/4) · [PR #21](https://github.com/esdu/app2/pull/21) | One guarded save path, commit-based nonmodal status, injectable haptics/announcements and replacement-safe timeout. [Feedback note](ISSUE_4_SAVE_FEEDBACK.md). | Run `SaveFeedbackTests`, model tests and repeated save/playback/delete/navigation UI flow. Verify failures, lease release, inactive completion and stale timeout behavior. | Physical haptic delivery and VoiceOver announcements/focus, accessible text and navigation behavior. | Implementation present; native/accessibility evidence pending. Keep open. |
+| [#2](https://github.com/esdu/app2/issues/2) · [PR #19](https://github.com/esdu/app2/pull/19) | Production `RollingRecorder` ingestion seam, deterministic timestamped A/V source, rotation/leases/library tests and diagnostics; independent 10 ms PCM boundary/leading/lagging-delivery coverage. [Harness note](ISSUE_2_RECORDER_HARNESS.md). | Focused recorder run failed compilation; source correction is unvalidated (see run above). Execute `RollingRecorderTests`, `CameraModelTests` and media tests: all four 300-second logical retention windows with audio on/off, decoded endpoints/counts/audio markers, rollover/warmup/repeated saves, lifecycle/failure/watchdog and cleanup. Retain failed media/timing evidence. Run the added `AudioBoundaryTests` for session-start PCM trimming and independent leading/lagging packet delivery across rollovers; these assertions are not yet observed results. | Real camera cadence/orientation, microphone negotiation, interruption/protected-data behavior and sustained pressure/storage runs. Low-resolution accelerated fixtures establish no device performance. | Implementation present; acceptance pending native and separate device checks. Keep open. |
+| [#3](https://github.com/esdu/app2/issues/3) · [PR #17](https://github.com/esdu/app2/pull/17) | Typed, versioned, tolerant preference store; guarded model updates; disposable test domains; CA92.1 declaration. [Preferences note](ISSUE_3_PREFERENCES.md). | Independent run passed 36 unit/integration tests and five baseline UI tests, but failed the additional preference relaunch UI assertion at line 64. Built/archive privacy passed. Verify the UI-query correction, then obtain a passing relaunch result and regression results for the final integrated head. Verify stopped relaunch and no permission/capture request; validate source/built/archive manifests with the new declaration. | No feature-specific hardware benchmark required; retain the shared release/privacy gates. | Implementation present; native preference relaunch test failed and its source correction is unvalidated. Keep open until scoped acceptance passes. |
+| [#4](https://github.com/esdu/app2/issues/4) · [PR #21](https://github.com/esdu/app2/pull/21) | One guarded save path, commit-based nonmodal status, injectable haptics/announcements and replacement-safe timeout. [Feedback note](ISSUE_4_SAVE_FEEDBACK.md). | Focused head `0bb2497` passed 36 unit/integration tests (including eight `SaveFeedbackTests`), five UI tests and built/archive privacy (see run above). Run final integrated regression to cover the later recorder/post-roll/quality changes. | Physical haptic delivery and VoiceOver announcements/focus, accessible text and navigation behavior. | Focused native checks passed; final integrated regression and physical accessibility evidence pending. Keep open. |
 | [#5](https://github.com/esdu/app2/issues/5) · [PR #25](https://github.com/esdu/app2/pull/25) | Public `AVCaptureEventInteraction` adapter, iOS 17.2 availability gate, iOS 17.0–17.1 onscreen fallback, guarded release routing and stale callback rejection. [Button note](ISSUE_5_VOLUME_BUTTONS.md). | Build at deployment target 17.0; run `CapturePressRouterTests`, `HardwareSaveRoutingTests` and onscreen UI regressions. Synthetic callback tests do not exercise hardware delivery. | Both buttons, one clip per press/hold, rapid/save-finalization presses, dim operation, navigation/interruption cleanup, normal volume outside eligible capture and minimum-OS fallback. | Implementation present; physical validation explicitly required before production support is claimed. Keep open. |
-| [#6](https://github.com/esdu/app2/issues/6) · [PR #24](https://github.com/esdu/app2/pull/24) | Explicit dim view with touch Save/Wake, scene-specific brightness ownership/restoration, battery status and accessible post-roll countdown. Compilation failure in the first integration run has a source fix, still awaiting native verification. [Dim/battery note](ISSUE_6_DIM_BATTERY.md). | Run `DimBatteryTests` and `DimRecordingUITests`: all exits, external brightness changes, observer cleanup, background/no auto-resume, large text and touch-only save. | Actual brightness restoration across wake/stop/library/call/Home/lock and termination/relaunch; Control Center changes; charging updates; VoiceOver/XXXL/small-screen operation at dim brightness. No energy-saving claim without measurement. | Implementation present; native and hardware acceptance pending. Keep open. |
+| [#6](https://github.com/esdu/app2/issues/6) · [PR #24](https://github.com/esdu/app2/pull/24) | Explicit dim view with touch Save/Wake, scene-specific brightness ownership/restoration, battery status and accessible post-roll countdown. Both integration runs failed dim actor-isolation compilation. Latest stored-ownership source correction `4b5cfd9` remains unvalidated. [Dim/battery note](ISSUE_6_DIM_BATTERY.md). | Run `DimBatteryTests` and `DimRecordingUITests`: all exits, external brightness changes, observer cleanup, background/no auto-resume, large text and touch-only save. | Actual brightness restoration across wake/stop/library/call/Home/lock and termination/relaunch; Control Center changes; charging updates; VoiceOver/XXXL/small-screen operation at dim brightness. No energy-saving claim without measurement. | Implementation present; native and hardware acceptance pending. Keep open. |
 | [#7](https://github.com/esdu/app2/issues/7) · [PR #27](https://github.com/esdu/app2/pull/27) | Serious warning, critical pause/start block, explicit restart after cooling, no silent quality change. [Thermal note](ISSUE_7_THERMAL.md). | Run `ThermalTests`, `ThermalUITests`, recorder, cancellation and feedback suites. Verify stale notifications/start races, saved-file/lease preservation and exactly-once stops; satisfy #2 correctness gate. | Sustained physical soak with timestamped thermal states, audio/window variants, pending saves, decoded outputs and recovery. Simulator injection validates policy only. | Implementation present; native and physical soak pending. Keep open. |
 | [#8](https://github.com/esdu/app2/issues/8) · [PR #26](https://github.com/esdu/app2/pull/26) | Supported NV12 preference with BGRA fallback, explicit supported 30 fps selection/readback, sample validation and configuration/drop diagnostics. [NV12 note](ISSUE_8_NV12_BASELINE.md). | Run `CaptureFormatPolicyTests`, `NV12RecorderTests` and #2 suites. Decode both NV12 ranges with audio on/off; verify color, frame IDs/PTS, portrait metadata, fallback/errors and fresh-generation state. | Front/rear actual formats/cadence/drops, physical portrait/color/A/V checks and matched BGRA/NV12 CPU/memory/energy/thermal/long-session measurements. Synthetic portrait input does not test sensor rotation. | Implementation present; native and device evidence pending. No measured performance gain. Keep open. |
 | [#9](https://github.com/esdu/app2/issues/9) · [PR #28](https://github.com/esdu/app2/pull/28) | Internal `.evaluatePassthrough` candidate with compatibility check, narrow fallback and cleanup. Production `ClipComposer()` remains `.highestQuality` MP4. [Export note](ISSUE_9_EXPORT_EVALUATION.md). | Run `ClipExportTests` and `ClipExportContentTests` with #2/media suites: decode endpoints/non-keyframe trims, A/V joins/gaps, orientation and windows; exercise fallback, cancellation/storage/access errors and leases. Retain actual attempt sequence, bytes and timing attachments. | Early/full/repeated-save iPhone comparison, encoder pressure/drops/thermal/energy, physical front/rear playback, Photos/share consumers, reload/deletion. | Evaluation code present; measurements/correctness acceptance pending. Default unchanged; no adoption or issue closure claimed. |
