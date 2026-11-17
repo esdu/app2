@@ -133,48 +133,158 @@ final class AudioBoundaryTests: XCTestCase {
 
     private func roundTrip(audioDeliveryDelay: Double) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("AudioBoundary-" + UUID().uuidString)
-        try ProtectedFiles.directory(directory)
         defer { try? FileManager.default.removeItem(at: directory) }
+        try ProtectedFiles.directory(directory)
         let recorder = RollingRecorder(queue: DispatchQueue(label: "AudioBoundaryTest"),
             directory: directory.appendingPathComponent("buffer"))
-        await withCheckedContinuation { continuation in recorder.queue.async {
-            recorder.start(audio: true, duration: 15); continuation.resume()
-        } }
-        let video = TimestampedSampleSource(frameDuration: CMTime(value: 1, timescale: 30))
-        // Independent 10 ms PCM packets straddle every 30 fps/two-second video
-        // boundary. Delivery delay is independent of the media timestamp.
-        let audio = TimestampedSampleSource(origin: video.origin - 0.013,
-            frameDuration: CMTime(value: 441, timescale: 44_100))
-        var packet = 0
-        let frameCount = 183
-        for frame in 0..<frameCount {
-            try await recorder.appendManually(video.video(frame: frame), isAudio: false)
-            while audio.timestamp(frame: packet) + audioDeliveryDelay <= video.timestamp(frame: frame) {
+        var snapshot: BufferSnapshot?
+        var failure: Error?
+        var timing = ["audio delivery delay=\(audioDeliveryDelay)"]
+        let failuresBefore = testRun?.failureCount ?? 0
+        var attachedEvidence = false
+        do {
+            await withCheckedContinuation { continuation in recorder.queue.async {
+                recorder.start(audio: true, duration: 15); continuation.resume()
+            } }
+            let video = TimestampedSampleSource(frameDuration: CMTime(value: 1, timescale: 30))
+            // Independent 10 ms PCM packets straddle every 30 fps/two-second video
+            // boundary. Delivery delay is independent of the media timestamp.
+            let audio = TimestampedSampleSource(origin: video.origin - 0.013,
+                frameDuration: CMTime(value: 441, timescale: 44_100))
+            var packet = 0
+            let frameCount = 183
+            for frame in 0..<frameCount {
+                try await recorder.appendManually(video.video(frame: frame), isAudio: false)
+                while audio.timestamp(frame: packet) + audioDeliveryDelay <= video.timestamp(frame: frame) {
+                    try await recorder.appendManually(audio.audio(frame: packet), isAudio: true)
+                    packet += 1
+                }
+            }
+            let cutoff = video.origin + Double(frameCount) / 30
+            while audio.timestamp(frame: packet) < cutoff {
                 try await recorder.appendManually(audio.audio(frame: packet), isAudio: true)
                 packet += 1
             }
+            timing.append("fed video frames=\(frameCount), PCM packets=\(packet), cutoff=\(cutoff)")
+            let leased = try await recorder.snapshot()
+            snapshot = leased
+            timing.append("snapshot end=\(leased.end), segments=\(leased.segments)")
+            let output = directory.appendingPathComponent("audio.mp4")
+            try await ClipComposer().compose(leased, to: output)
+            try assertDecodedBoundaryAudio(output, duration: Double(frameCount) / 30, timing: &timing)
+        } catch {
+            failure = error
+            timing.append("run error: \(error)")
         }
-        let cutoff = video.origin + Double(frameCount) / 30
-        while audio.timestamp(frame: packet) < cutoff {
-            try await recorder.appendManually(audio.audio(frame: packet), isAudio: true)
-            packet += 1
+        if failure != nil || (testRun?.failureCount ?? 0) > failuresBefore {
+            // Preserve source MOVs and partial exports before stop/release can
+            // delete them, including failures thrown before decoding starts.
+            attachFailureEvidence(in: directory, timing: timing)
+            attachedEvidence = true
         }
-        let snapshot = try await recorder.snapshot()
-        let output = directory.appendingPathComponent("audio.mp4")
-        try await ClipComposer().compose(snapshot, to: output)
-        try assertDecodedBoundaryAudio(output, duration: Double(frameCount) / 30)
-        if (testRun?.failureCount ?? 0) > 0 {
-            let attachment = XCTAttachment(contentsOfFile: output); attachment.lifetime = .keepAlways; add(attachment)
-        }
-        await recorder.release(snapshot)
+        // Cleanup deliberately runs after both thrown errors and XCTest assertion
+        // failures. A lease is released only after the recorder has stopped.
         await withCheckedContinuation { continuation in recorder.queue.async {
             recorder.stop(); continuation.resume()
         } }
-        let state = try await recorder.diagnostics()
-        XCTAssertTrue(state.files.isEmpty)
+        if let snapshot { await recorder.release(snapshot) }
+        do {
+            let state = try await recorder.diagnostics()
+            timing.append("cleanup running=\(state.running), files=\(state.files), pending=\(state.pending)")
+            XCTAssertFalse(state.running)
+            XCTAssertTrue(state.files.isEmpty)
+        } catch {
+            if failure == nil { failure = error }
+            timing.append("cleanup diagnostics error: \(error)")
+        }
+        if attachedEvidence {
+            attachFailureEvidence(in: directory, timing: timing, includeMedia: false)
+        } else if failure != nil || (testRun?.failureCount ?? 0) > failuresBefore {
+            attachFailureEvidence(in: directory, timing: timing)
+        }
+        if let failure { throw failure }
     }
 
-    private func assertDecodedBoundaryAudio(_ url: URL, duration: Double) throws {
+    private func attachFailureEvidence(in directory: URL, timing: [String], includeMedia: Bool = true) {
+        let log = XCTAttachment(string: timing.joined(separator: "\n"))
+        log.name = includeMedia ? "Audio boundary failure timing" : "Audio boundary cleanup timing"
+        log.lifetime = .keepAlways; add(log)
+        guard includeMedia else { return }
+        let files = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil)
+        while let url = files?.nextObject() as? URL {
+            guard ["mov", "mp4", "partial"].contains(url.pathExtension) else { continue }
+            let media = XCTAttachment(contentsOfFile: url)
+            media.name = "Audio boundary " + url.lastPathComponent
+            media.lifetime = .keepAlways; add(media)
+        }
+    }
+
+    /// Overlapping 2 ms bins prevent a short padded gap from being averaged with
+    /// a whole 20 ms window of valid tone. The threshold allows substantial AAC
+    /// attenuation; its simulator/device behavior still needs native execution.
+    private struct BoundaryProbe {
+        static let binsPerBoundary = 59
+        struct Bin {
+            var energy: Double = 0
+            var count = 0
+            var rms: Double { sqrt(energy / Double(max(1, count))) }
+        }
+        let boundaries: [Double]
+        private(set) var bins: [Bin]
+        init(boundaries: [Double]) {
+            self.boundaries = boundaries
+            bins = [Bin](repeating: Bin(), count: boundaries.count * Self.binsPerBoundary)
+        }
+        mutating func add(_ values: [Int16], startingAt start: Double) {
+            for (sample, value) in values.enumerated() {
+                let time = start + Double(sample) / 44_100
+                for (boundary, center) in boundaries.enumerated() {
+                    let offset = time - (center - 0.030)
+                    guard offset >= 0, offset < 0.060 else { continue }
+                    let latest = min(Self.binsPerBoundary - 1, Int(floor(offset / 0.001)))
+                    for bin in max(0, latest - 2)...latest {
+                        let relative = offset - Double(bin) * 0.001
+                        guard relative >= 0, relative < 0.002 else { continue }
+                        let index = boundary * Self.binsPerBoundary + bin
+                        bins[index].energy += Double(value) * Double(value)
+                        bins[index].count += 1
+                    }
+                }
+            }
+        }
+        func threshold(for boundary: Int) -> Double {
+            let base = boundary * Self.binsPerBoundary
+            let reference = (0..<Self.binsPerBoundary).filter { $0 < 10 || $0 >= 49 }
+                .map { bins[base + $0].rms }.sorted()
+            // Compare with nearby decoded tone as well as a conservative absolute
+            // floor; timestamp-contiguous inserted silence must not pass.
+            return max(2_500, reference[reference.count / 2] * 0.4)
+        }
+        func lowEnergyBins(for boundary: Int) -> [Int] {
+            let threshold = threshold(for: boundary)
+            let base = boundary * Self.binsPerBoundary
+            return (0..<Self.binsPerBoundary).filter { bins[base + $0].rms < threshold }
+        }
+    }
+
+    func testBoundaryProbeDetectsTimestampContinuousFifteenMillisecondSilence() {
+        let start = 1.96
+        let tone: [Int16] = (0..<3_528).map {
+            Int16(sin(Double($0) / 44_100 * 600 * 2 * .pi) * 12_000)
+        }
+        var continuous = BoundaryProbe(boundaries: [2])
+        continuous.add(tone, startingAt: start)
+        XCTAssertTrue(continuous.lowEnergyBins(for: 0).isEmpty)
+        var padded = tone
+        for index in padded.indices where abs(start + Double(index) / 44_100 - 2) < 0.0075 {
+            padded[index] = 0
+        }
+        var gap = BoundaryProbe(boundaries: [2])
+        gap.add(padded, startingAt: start)
+        XCTAssertFalse(gap.lowEnergyBins(for: 0).isEmpty)
+    }
+
+    private func assertDecodedBoundaryAudio(_ url: URL, duration: Double, timing: inout [String]) throws {
         let asset = AVURLAsset(url: url)
         let track = try XCTUnwrap(asset.tracks(withMediaType: .audio).first)
         let reader = try AVAssetReader(asset: asset)
@@ -182,8 +292,7 @@ final class AudioBoundaryTests: XCTestCase {
             AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: 16,
             AVLinearPCMIsFloatKey: false, AVLinearPCMIsNonInterleaved: false])
         reader.add(output); XCTAssertTrue(reader.startReading())
-        var energy = [Double](repeating: 0, count: 3)
-        var counts = [Int](repeating: 0, count: 3)
+        var probe = BoundaryProbe(boundaries: [2, 4, 6])
         var previousEnd: Double?
         while let sample = output.copyNextSampleBuffer() {
             let block = try XCTUnwrap(CMSampleBufferGetDataBuffer(sample))
@@ -194,20 +303,23 @@ final class AudioBoundaryTests: XCTestCase {
             let start = CMSampleBufferGetPresentationTimeStamp(sample).seconds
             if let previousEnd { XCTAssertEqual(start, previousEnd, accuracy: 2.0 / 44_100) }
             previousEnd = start + Double(values.count) / 44_100
-            for (index, value) in values.enumerated() {
-                let time = start + Double(index) / 44_100
-                for boundary in 1...3 where abs(time - Double(boundary * 2)) < 0.010 {
-                    energy[boundary - 1] += Double(value) * Double(value)
-                    counts[boundary - 1] += 1
-                }
-            }
+            probe.add(values, startingAt: start)
         }
         XCTAssertEqual(reader.status, .completed)
         XCTAssertEqual(try XCTUnwrap(previousEnd), duration, accuracy: 0.03)
-        for boundary in 0..<3 {
-            XCTAssertGreaterThan(counts[boundary], 800, "Missing PCM near rollover \(boundary + 1)")
-            let rms = sqrt(energy[boundary] / Double(max(1, counts[boundary])))
-            XCTAssertGreaterThan(rms, 4_000, "Audio gap near rollover \(boundary + 1)")
+        for boundary in probe.boundaries.indices {
+            let threshold = probe.threshold(for: boundary)
+            let base = boundary * BoundaryProbe.binsPerBoundary
+            timing.append("rollover \(probe.boundaries[boundary]) threshold=\(threshold), bins=" +
+                (0..<BoundaryProbe.binsPerBoundary).map {
+                    let bin = probe.bins[base + $0]
+                    return "\($0):count=\(bin.count),rms=\(bin.rms)"
+                }.joined(separator: ";"))
+            for bin in 0..<BoundaryProbe.binsPerBoundary {
+                let result = probe.bins[base + bin]
+                XCTAssertGreaterThanOrEqual(result.count, 85, "Missing PCM near rollover \(boundary + 1), bin \(bin)")
+                XCTAssertGreaterThanOrEqual(result.rms, threshold, "Audio gap near rollover \(boundary + 1), bin \(bin)")
+            }
         }
     }
 }
