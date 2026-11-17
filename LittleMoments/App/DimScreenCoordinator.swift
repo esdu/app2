@@ -184,7 +184,8 @@ private func performOnMain(_ action: @escaping @MainActor () -> Void) {
     deinit {
         let screen = screen, batteryMonitor = batteryMonitor
         let original = originalBrightness, applied = appliedBrightness
-        let restore = ownsBrightness && isDimmed
+        let dimmed = isDimmed
+        let restore = ownsBrightness && dimmed
         performOnMain {
             screen.stopObserving()
             if restore, let original, let applied, let current = screen.brightness,
