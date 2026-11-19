@@ -1,6 +1,67 @@
 import AVFoundation
 
+enum ClipExportStrategy: Equatable {
+    case highestQuality
+    /// Internal evaluation only. No app preference or production caller selects it.
+    case evaluatePassthrough
+}
+
+enum ClipExportFailure: Error {
+    case incompatible
+}
+
+protocol ClipExportBackend {
+    func supportsPassthrough(_ asset: AVAsset) async -> Bool
+    func export(_ asset: AVAsset, preset: String, to destination: URL) async throws
+}
+
+struct SystemClipExportBackend: ClipExportBackend {
+    func supportsPassthrough(_ asset: AVAsset) async -> Bool {
+        await withCheckedContinuation { continuation in
+            AVAssetExportSession.determineCompatibility(ofExportPreset: AVAssetExportPresetPassthrough,
+                with: asset, outputFileType: .mp4) { continuation.resume(returning: $0) }
+        }
+    }
+    func export(_ asset: AVAsset, preset: String, to destination: URL) async throws {
+        try Task.checkCancellation()
+        // Every attempt owns a fresh session. Sessions cannot be reused after failure.
+        guard let session = AVAssetExportSession(asset: asset, presetName: preset),
+              session.supportedFileTypes.contains(.mp4) else { throw ClipExportFailure.incompatible }
+        session.outputURL = destination
+        session.outputFileType = .mp4
+        session.shouldOptimizeForNetworkUse = false
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            await session.export()
+            try Task.checkCancellation()
+            guard session.status == .completed else {
+                if session.status == .cancelled { throw CancellationError() }
+                throw session.error ?? CameraError.writer("The clip could not be exported.")
+            }
+        } onCancel: { session.cancelExport() }
+    }
+}
+
 struct ClipComposer {
+    let strategy: ClipExportStrategy
+    let backend: any ClipExportBackend
+    init(strategy: ClipExportStrategy = .highestQuality, backend: any ClipExportBackend = SystemClipExportBackend()) {
+        self.strategy = strategy; self.backend = backend
+    }
+
+    /// Only explicit incompatibility and the AVFoundation unsupported-operation
+    /// error qualify for retry. Unknown export failures stay actionable.
+    static func allowsPassthroughFallback(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if let failure = error as? ClipExportFailure, case .incompatible = failure { return true }
+        let failure = error as NSError
+        // Never hide a causal filesystem/cancellation/unknown failure behind a
+        // generic compatibility wrapper. Conservative retry is intentional.
+        if let underlying = failure.userInfo[NSUnderlyingErrorKey] as? Error,
+           !allowsPassthroughFallback(underlying) { return false }
+        return failure.domain == AVFoundationErrorDomain &&
+            failure.code == AVError.operationNotSupportedForAsset.rawValue
+    }
     /// Source timestamps remain on the shared capture clock; each source range is
     /// translated once, including its audio. Gaps are collapsed without A/V drift.
     func compose(_ snapshot: BufferSnapshot, to destination: URL) async throws {
@@ -33,13 +94,28 @@ struct ClipComposer {
             cursor = cursor + range.duration
         }
         guard cursor > .zero else { throw CameraError.empty }
-        guard let export = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else { throw CameraError.unavailable }
-        export.outputURL = destination
-        export.outputFileType = .mp4
-        export.shouldOptimizeForNetworkUse = false
         do {
-            await export.export()
-            guard export.status == .completed else { throw export.error ?? CameraError.writer("The clip could not be exported.") }
+            try Task.checkCancellation()
+            let usePassthrough: Bool
+            if strategy == .evaluatePassthrough { usePassthrough = await backend.supportsPassthrough(composition) }
+            else { usePassthrough = false }
+            if usePassthrough {
+                do {
+                    try await backend.export(composition, preset: AVAssetExportPresetPassthrough, to: destination)
+                } catch {
+                    try Task.checkCancellation()
+                    guard Self.allowsPassthroughFallback(error) else { throw error }
+                    // Keep the same immutable source composition/lease; remove only
+                    // this attempt's partial destination before making a fresh session.
+                    if FileManager.default.fileExists(atPath: destination.path) {
+                        try FileManager.default.removeItem(at: destination)
+                    }
+                    try await backend.export(composition, preset: AVAssetExportPresetHighestQuality, to: destination)
+                }
+            } else {
+                try await backend.export(composition, preset: AVAssetExportPresetHighestQuality, to: destination)
+            }
+            try Task.checkCancellation()
             try ProtectedFiles.protect(destination)
         } catch { ProtectedFiles.remove([destination]); throw error }
     }
