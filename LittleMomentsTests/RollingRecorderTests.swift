@@ -556,6 +556,51 @@ final class RollingRecorderTests: XCTestCase {
         func cancel() { cancellations += 1; ProtectedFiles.remove([url]) }
     }
 
+    func testSnapshotPrunesExpiredFilesAfterOutOfOrderFinalization() async throws {
+        var writers: [HeldWriter] = []
+        let h = harness(makeWriter: { sample, _, directory in
+            let writer = try HeldWriter(sample: sample, directory: directory)
+            writers.append(writer); return writer
+        })
+        await h.start(audio: false, window: 30)
+        let source = TimestampedSampleSource()
+        // Two old finalizers remain pending across a logical media gap. The
+        // hardware limit permits these two plus the current writer.
+        for frame in [0, 20, 400] {
+            try await h.feed(source, frames: frame..<(frame + 1), audio: false)
+        }
+        let saving = Task { try await h.recorder.snapshot() }
+        try await waitUntil { try await h.recorder.diagnostics().freezing }
+        await h.perform {
+            XCTAssertEqual(writers.count, 3)
+            // Complete newest first and oldest last, entirely while freezing.
+            // Every success corresponds to an actual file in the buffer.
+            for writer in writers.reversed() {
+                writer.completion?(.success(VideoSegment(id: UUID(), url: writer.url,
+                    start: writer.start.seconds, end: writer.end.seconds,
+                    bytes: ProtectedFiles.bytes(writer.url))))
+            }
+        }
+        let snapshot = try await saving.value
+        let state = try await h.recorder.diagnostics()
+        XCTAssertEqual(snapshot.segments.count, 1)
+        XCTAssertEqual(snapshot.end, source.origin + 40.1, accuracy: 0.001)
+        XCTAssertEqual(Set(state.files), Set(snapshot.segments.map(\.url)))
+        XCTAssertEqual(state.segments, snapshot.segments)
+        XCTAssertEqual(state.diskBytes, snapshot.segments.reduce(0) { $0 + $1.bytes })
+        XCTAssertEqual(state.pending, 0); XCTAssertEqual(state.finalizingWriters, 0)
+        await h.perform {
+            XCTAssertTrue(writers.prefix(2).allSatisfy { !FileManager.default.fileExists(atPath: $0.url.path) })
+            XCTAssertTrue(writers.allSatisfy { $0.cancellations == 0 })
+        }
+        await h.stop()
+        XCTAssertTrue(snapshot.segments.allSatisfy { FileManager.default.fileExists(atPath: $0.url.path) })
+        await h.recorder.release(snapshot)
+        let cleared = try await h.recorder.diagnostics()
+        XCTAssertTrue(cleared.files.isEmpty); XCTAssertTrue(cleared.segments.isEmpty)
+        XCTAssertEqual(cleared.leaseCount, 0)
+    }
+
     func testRepeatedStopRestartCancelsOldFinalizingWritersBeforeNewCapture() async throws {
         var writers: [HeldWriter] = []
         let h = harness(makeWriter: { sample, _, directory in
