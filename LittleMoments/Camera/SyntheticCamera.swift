@@ -62,9 +62,12 @@ enum SyntheticMovie {
         private var cancelled = false
         private var settled = false
         private var finishing = false
-        private var requesting = false
         private var videoFrame = 0
         private var audioFrame = 0
+        private var videoFinished = false
+        private var audioFinished = false
+        private var videoReady = false
+        private var audioReady = false
 
         init(url: URL, audio: Bool, timeout: TimeInterval,
              readiness: @escaping (AVAssetWriterInput) -> Bool) throws {
@@ -85,32 +88,33 @@ enum SyntheticMovie {
         func start(_ continuation: CheckedContinuation<Void, Error>) {
             queue.async { [self] in
                 self.continuation = continuation
-                guard !cancelled else { settle(.failure(CancellationError())); return }
-                guard writer.startWriting() else {
-                    settle(.failure(writer.error ?? CameraError.unavailable)); return
+                guard !self.cancelled else { self.settle(.failure(CancellationError())); return }
+                guard self.writer.startWriting() else {
+                    self.settle(.failure(self.writer.error ?? CameraError.unavailable)); return
                 }
-                writer.startSession(atSourceTime: .zero)
-                let timer = DispatchSource.makeTimerSource(queue: queue)
-                timer.schedule(deadline: .now() + timeout)
+                self.writer.startSession(atSourceTime: .zero)
+                let timer = DispatchSource.makeTimerSource(queue: self.queue)
+                timer.schedule(deadline: .now() + self.timeout)
                 timer.setEventHandler { [weak self] in self?.timedOut() }
                 self.timer = timer; timer.resume()
-                requesting = true
-                video.requestMediaDataWhenReady(on: queue) { [self] in pumpVideo() }
-                audio?.requestMediaDataWhenReady(on: queue) { [self] in pumpAudio() }
+                self.video.requestMediaDataWhenReady(on: self.queue) { [weak self] in self?.pumpVideo() }
+                self.audio?.requestMediaDataWhenReady(on: self.queue) { [weak self] in self?.pumpAudio() }
             }
         }
 
         func cancel() {
             queue.async { [self] in
-                cancelled = true
-                if continuation != nil { settle(.failure(CancellationError())) }
+                self.cancelled = true
+                if self.continuation != nil { self.settle(.failure(CancellationError())) }
             }
         }
 
         private func pumpVideo() {
             guard !settled, !finishing, videoFrame < 60 else { return }
             do {
-                while videoFrame < 60, readiness(video) {
+                while videoFrame < 60 {
+                    videoReady = readiness(video)
+                    guard videoReady else { break }
                     guard writer.status == .writing else { throw writer.error ?? CameraError.unavailable }
                     let pixel = try SyntheticMovie.pixel(frame: videoFrame, adaptor: adaptor)
                     guard adaptor.append(pixel, withPresentationTime: CMTime(value: Int64(videoFrame), timescale: 30)) else {
@@ -118,21 +122,23 @@ enum SyntheticMovie {
                     }
                     videoFrame += 1
                 }
-                if videoFrame == 60 { video.markAsFinished(); finishIfReady() }
+                if videoFrame == 60 { video.markAsFinished(); videoFinished = true; finishIfReady() }
             } catch { settle(.failure(error)) }
         }
 
         private func pumpAudio() {
             guard !settled, !finishing, audioFrame < 60, let audio else { return }
             do {
-                while audioFrame < 60, readiness(audio) {
+                while audioFrame < 60 {
+                    audioReady = readiness(audio)
+                    guard audioReady else { break }
                     guard writer.status == .writing else { throw writer.error ?? CameraError.unavailable }
                     guard audio.append(try SyntheticMovie.tone(frame: audioFrame)) else {
                         throw writer.error ?? CameraError.unavailable
                     }
                     audioFrame += 1
                 }
-                if audioFrame == 60 { audio.markAsFinished(); finishIfReady() }
+                if audioFrame == 60 { audio.markAsFinished(); audioFinished = true; finishIfReady() }
             } catch { settle(.failure(error)) }
         }
 
@@ -143,19 +149,19 @@ enum SyntheticMovie {
             writer.finishWriting { [weak self] in
                 guard let self else { return }
                 self.queue.async { [self] in
-                    guard !settled else { return }
+                    guard !self.settled else { return }
                     do {
-                        guard writer.status == .completed else { throw writer.error ?? CameraError.unavailable }
-                        try ProtectedFiles.protect(url)
-                        settle(.success(()))
-                    } catch { settle(.failure(error)) }
+                        guard self.writer.status == .completed else { throw self.writer.error ?? CameraError.unavailable }
+                        try ProtectedFiles.protect(self.url)
+                        self.settle(.success(()))
+                    } catch { self.settle(.failure(error)) }
                 }
             }
         }
 
         private func timedOut() {
             guard !settled else { return }
-            let audioProgress = audio == nil ? "off" : "\(audioFrame)/60 ready=\(readiness(audio!))"
+            let audioProgress = audio.map { "\(audioFrame)/60 ready=\(audioReady) encoderReady=\($0.isReadyForMoreMediaData)" } ?? "off"
             let status: String
             switch writer.status {
             case .unknown: status = "unknown"
@@ -165,7 +171,7 @@ enum SyntheticMovie {
             case .cancelled: status = "cancelled"
             @unknown default: status = "unrecognized(\(writer.status.rawValue))"
             }
-            let details = "stage=\(finishing ? "finishing" : "feeding") video=\(videoFrame)/60 ready=\(readiness(video)) " +
+            let details = "stage=\(finishing ? "finishing" : "feeding") video=\(videoFrame)/60 ready=\(videoReady) encoderReady=\(video.isReadyForMoreMediaData) " +
                 "audio=\(audioProgress) writerStatus=\(status) error=\(String(describing: writer.error))"
             settle(.failure(CameraError.writer("Synthetic media encoder timed out: " + details)))
         }
@@ -174,9 +180,15 @@ enum SyntheticMovie {
             guard !settled, let continuation else { return }
             settled = true; self.continuation = nil
             timer?.cancel(); timer = nil
-            if requesting { video.stopRequestingMediaData(); audio?.stopRequestingMediaData() }
             if case .failure = result {
-                if writer.status == .writing || writer.status == .unknown { writer.cancelWriting() }
+                // markAsFinished on the request queue prevents further input
+                // callbacks. Only unfinished inputs on a writing asset accept
+                // EOF; failed/cancelled assets are safe with weak callbacks.
+                if writer.status == .writing {
+                    if !videoFinished { video.markAsFinished(); videoFinished = true }
+                    if let audio, !audioFinished { audio.markAsFinished(); audioFinished = true }
+                }
+                writer.cancelWriting()
                 ProtectedFiles.remove([url])
             }
             continuation.resume(with: result)
