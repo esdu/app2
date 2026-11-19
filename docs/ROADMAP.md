@@ -1,14 +1,15 @@
-# Deferred features and feasibility
+# Deferred features and gated assessments
 
-The MVP keeps capture and export local and foreground-only. No item below is claimed implemented.
+Implemented preferences, feedback, dim/battery, public capture-button interaction, thermal policy and opt-in Off/5/10 post-roll are described in the [README](../README.md) and [acceptance ledger](ISSUE_ACCEPTANCE_LEDGER.md). Their physical checks remain pending. Capture stays local, foreground-only and explicitly restarted after interruption.
 
-| Feature | Feasibility and implementation approach |
+| Feature | Current decision and remaining gate |
 | --- | --- |
-| Offline “Save recording” | Speech framework requires separate speech permission, locale/device availability, `supportsOnDeviceRecognition`, and `requiresOnDeviceRecognition = true`. Verify actual on-device support at runtime and on each target device/locale; never silently use server recognition or claim universal offline support. Feed a bounded audio stream alongside capture, handle interruptions and recognizer task duration limits, and measure power/false triggers. Unsupported devices/locales should show unavailable. |
-| Hands-free triggers | Consider local Vision gesture recognition on sparsely sampled frames or explicit external accessibility/switch controls. Require an obvious armed state, false-trigger protection, battery measurements, and manual save fallback. No private volume-button interception. |
-| Apple Watch companion | WatchConnectivity can send an explicit save request to the actively buffering foreground iPhone. Display reachability/acknowledgment and stale-state handling. Watch cannot guarantee camera capture on a suspended/locked iPhone; do not promise remote background recording. |
-| Resolution selection | Offer supported session presets and encoder sizes only while stopped. Budget bit rate/storage limits together and benchmark older phones; restart capture on changes. |
-| Slow motion | Select supported device `activeFormat` frame-rate ranges and exposure; coordinate playback timing and an audio policy. High frame rates increase thermal load, bandwidth, and storage, requiring fresh bounds and hardware QA. |
-| Post-trigger duration | Pin the pre-trigger range, collect a bounded future tail with a cancellation/deadline state, then export on the same capture clock. Stop/background events must offer a partial result or visible failure. Count both pre-trigger pins and future segments within the same disk budget. |
+| On-device voice save | **Deferred** after the [feasibility assessment](ISSUE_13_VOICE_FEASIBILITY.md). No speech permission or recognition is enabled. A later opt-in prototype needs actual locale/device support, on-device-only enforcement, bounded audio work, stale-task protection and measured reliability/energy. |
+| Continuous snapshot replacement | **No-go for adoption**. The [DEBUG continuous MOV experiment](ISSUE_11_CONTINUOUS_SNAPSHOT.md) has comparative correctness tests, but no device-energy comparison or hard combined capture/export staging budget. Production Off retains the established snapshot path. |
+| Passthrough export default | **Unchanged**. The [internal MP4 evaluation](ISSUE_9_EXPORT_EVALUATION.md) retains highest-quality export as default until device/consumer correctness and performance gates pass. |
+| 1080p30 selection | **No-go pending evidence**. [Budget/capability assessment](ISSUE_12_QUALITY_FEASIBILITY.md) and actual-resolution codec tests do not establish 30 fps device throughput or sustained retention/storage/thermal bounds. No runtime preset is exposed. |
+| 4K or 60 fps | Separately deferred; capability enumeration alone cannot justify memory, encoder, retention, power or thermal support. |
+| Other hands-free triggers | Future local gestures or explicit external accessibility/switch controls need an armed state, false-trigger protection, manual fallback and measured power. Public capture-button support is already implemented; no private volume interception is proposed. |
+| Apple Watch companion | Future explicit requests to an actively buffering foreground iPhone need reachability, acknowledgment and stale-state handling. A suspended or locked iPhone cannot promise camera capture. |
 
-Additional candidates: photo thumbnails, configurable saved-library warning threshold (never automatic deletion), richer interruption diagnostics, landscape support, and hardware-matrix accessibility testing.
+Other candidates include thumbnails, an explicit saved-library warning threshold without automatic deletion, landscape support and a broader physical accessibility matrix. Keep each proposal scoped and gated by measured evidence.
