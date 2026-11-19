@@ -221,10 +221,17 @@ final class RollingRecorderTests: XCTestCase {
             // manual pacing, to hold three genuine finalizations outstanding.
             await h.perform { h.recorder.ingest(sample, isAudio: false) }
         }
-        let state = try await h.recorder.diagnostics(); XCTAssertFalse(state.running)
-        try await waitUntil { gate.count == 3 }
+        let state = try await h.recorder.diagnostics()
+        XCTAssertFalse(state.running)
+        XCTAssertEqual(state.pending, 0); XCTAssertEqual(state.finalizingWriters, 0)
+        XCTAssertTrue(state.files.isEmpty)
+        // Cancellation owns cleanup immediately. AVAssetWriter may suppress a
+        // completion when cancelWriting races finishWriting, so the number of
+        // callbacks reaching this delivery gate is deliberately not specified.
         gate.open()
-        try await waitUntil { try await h.recorder.diagnostics().files.isEmpty }
+        _ = try await h.recorder.diagnostics()
+        let cleared = try await h.recorder.diagnostics()
+        XCTAssertTrue(cleared.files.isEmpty); XCTAssertTrue(cleared.segments.isEmpty)
     }
 
     func testWatchdogUsesHostClockAndNeverRestarts() async throws {
@@ -317,51 +324,57 @@ final class RollingRecorderTests: XCTestCase {
         let state = try await h.recorder.diagnostics(); XCTAssertTrue(state.files.isEmpty)
     }
 
-    func testPostRollExactMediaEndpointsWarmupAndAllRetentionWindows() async throws {
+    // Each retention window has its own execution allowance. Keeping all 24
+    // real-codec/export scenarios in one XCTest exceeds the native runner's
+    // per-test deadline before it can report the remaining endpoint assertions.
+    func testPostRollExactMediaEndpoints15Seconds() async throws { try await postRollEndpoints(window: 15) }
+    func testPostRollExactMediaEndpoints30Seconds() async throws { try await postRollEndpoints(window: 30) }
+    func testPostRollExactMediaEndpoints60Seconds() async throws { try await postRollEndpoints(window: 60) }
+    func testPostRollExactMediaEndpoints120Seconds() async throws { try await postRollEndpoints(window: 120) }
+
+    private func postRollEndpoints(window: Double) async throws {
         // Mid-segment triggers exercise fixed start/end trimming, including the
         // first frame after Save, with identifiable AAC content on both sides.
-        for window in [15.0, 30, 60, 120] {
-            for warmup in [true, false] {
-                for postRoll in [0.0, 5, 10] {
-                    let h = harness()
-                    let source = TimestampedSampleSource(frameDuration: CMTime(value: 1, timescale: 2))
-                    await h.start(audio: true, window: window)
-                    let triggerFrame = warmup ? 3 : Int(window * 2) + 3
-                    try await h.feed(source, frames: 0..<triggerFrame, audio: true)
-                    let saving = Task { try await h.recorder.snapshot(postRoll: postRoll, onProgress: { _ in }) }
-                    if postRoll > 0 {
-                        try await waitUntil { try await h.recorder.diagnostics().collecting }
-                        // One frame at the cutoff starts the next ordinary segment.
-                        try await h.feed(source, frames: triggerFrame..<(triggerFrame + Int(postRoll * 2) + 1), audio: true)
-                    }
-                    let snapshot = try await saving.value
-                    let endFrame = triggerFrame + Int(postRoll * 2)
-                    let firstFrame = max(0, triggerFrame - Int(window * 2))
-                    XCTAssertEqual(snapshot.end, source.origin + Double(endFrame) / 2, accuracy: 0.001)
-                    XCTAssertEqual(snapshot.end - snapshot.window, source.origin + Double(triggerFrame) / 2 - window, accuracy: 0.001)
-                    XCTAssertFalse(snapshot.isTruncated)
-                    let url = directory.appendingPathComponent("post-\(window)-\(warmup)-\(postRoll).mp4")
-                    // Advance beyond the entire retention window before export.
-                    // The originally pinned beginning must still exist on disk.
-                    let nextFrame = endFrame + (postRoll > 0 ? 1 : 0)
-                    try await h.feed(source, frames: nextFrame..<(nextFrame + Int(window * 2) + 5), audio: true)
-                    XCTAssertTrue(snapshot.segments.allSatisfy { FileManager.default.fileExists(atPath: $0.url.path) })
-                    try await ClipComposer().compose(snapshot, to: url)
-                    let decoded = try decodeVideo(url)
-                    XCTAssertEqual(decoded.map(\.marker), Array(firstFrame..<endFrame))
-                    XCTAssertEqual(try XCTUnwrap(decoded.first).time, 0, accuracy: 0.002)
-                    XCTAssertEqual(try XCTUnwrap(decoded.last).time, Double(endFrame - firstFrame - 1) / 2, accuracy: 0.002)
-                    try assertAudio(url, sourceStart: Double(firstFrame) / 2, duration: Double(endFrame - firstFrame) / 2)
-                    let state = try await h.recorder.diagnostics()
-                    XCTAssertEqual(state.leaseCount, 1)
-                    XCTAssertLessThanOrEqual(state.segments.reduce(Int64(0)) { $0 + $1.bytes }, 160 * 1_024 * 1_024)
-                    XCTAssertLessThan(state.diskBytes, 192 * 1_024 * 1_024)
-                    XCTAssertEqual(state.saveDroppedVideo, 0)
-                    XCTAssertEqual(state.saveDroppedAudio, 0)
-                    await h.recorder.release(snapshot); await h.stop()
-                    let cleared = try await h.recorder.diagnostics()
-                    XCTAssertEqual(cleared.leaseCount, 0); XCTAssertTrue(cleared.files.isEmpty)
+        for warmup in [true, false] {
+            for postRoll in [0.0, 5, 10] {
+                let h = harness()
+                let source = TimestampedSampleSource(frameDuration: CMTime(value: 1, timescale: 2))
+                await h.start(audio: true, window: window)
+                let triggerFrame = warmup ? 3 : Int(window * 2) + 3
+                try await h.feed(source, frames: 0..<triggerFrame, audio: true)
+                let saving = Task { try await h.recorder.snapshot(postRoll: postRoll, onProgress: { _ in }) }
+                if postRoll > 0 {
+                    try await waitUntil { try await h.recorder.diagnostics().collecting }
+                    // One frame at the cutoff starts the next ordinary segment.
+                    try await h.feed(source, frames: triggerFrame..<(triggerFrame + Int(postRoll * 2) + 1), audio: true)
                 }
+                let snapshot = try await saving.value
+                let endFrame = triggerFrame + Int(postRoll * 2)
+                let firstFrame = max(0, triggerFrame - Int(window * 2))
+                XCTAssertEqual(snapshot.end, source.origin + Double(endFrame) / 2, accuracy: 0.001)
+                XCTAssertEqual(snapshot.end - snapshot.window, source.origin + Double(triggerFrame) / 2 - window, accuracy: 0.001)
+                XCTAssertFalse(snapshot.isTruncated)
+                let url = directory.appendingPathComponent("post-\(window)-\(warmup)-\(postRoll).mp4")
+                // Advance beyond the entire retention window before export.
+                // The originally pinned beginning must still exist on disk.
+                let nextFrame = endFrame + (postRoll > 0 ? 1 : 0)
+                try await h.feed(source, frames: nextFrame..<(nextFrame + Int(window * 2) + 5), audio: true)
+                XCTAssertTrue(snapshot.segments.allSatisfy { FileManager.default.fileExists(atPath: $0.url.path) })
+                try await ClipComposer().compose(snapshot, to: url)
+                let decoded = try decodeVideo(url)
+                XCTAssertEqual(decoded.map(\.marker), Array(firstFrame..<endFrame))
+                XCTAssertEqual(try XCTUnwrap(decoded.first).time, 0, accuracy: 0.002)
+                XCTAssertEqual(try XCTUnwrap(decoded.last).time, Double(endFrame - firstFrame - 1) / 2, accuracy: 0.002)
+                try assertAudio(url, sourceStart: Double(firstFrame) / 2, duration: Double(endFrame - firstFrame) / 2)
+                let state = try await h.recorder.diagnostics()
+                XCTAssertEqual(state.leaseCount, 1)
+                XCTAssertLessThanOrEqual(state.segments.reduce(Int64(0)) { $0 + $1.bytes }, 160 * 1_024 * 1_024)
+                XCTAssertLessThan(state.diskBytes, 192 * 1_024 * 1_024)
+                XCTAssertEqual(state.saveDroppedVideo, 0)
+                XCTAssertEqual(state.saveDroppedAudio, 0)
+                await h.recorder.release(snapshot); await h.stop()
+                let cleared = try await h.recorder.diagnostics()
+                XCTAssertEqual(cleared.leaseCount, 0); XCTAssertTrue(cleared.files.isEmpty)
             }
         }
     }
@@ -599,6 +612,48 @@ final class RollingRecorderTests: XCTestCase {
         let cleared = try await h.recorder.diagnostics()
         XCTAssertTrue(cleared.files.isEmpty); XCTAssertTrue(cleared.segments.isEmpty)
         XCTAssertEqual(cleared.leaseCount, 0)
+    }
+
+    func testOverloadCancelsAllThreeFinalizersAndRejectsLateFiles() async throws {
+        var writers: [HeldWriter] = []
+        var failures = 0
+        let h = harness(makeWriter: { sample, _, directory in
+            let writer = try HeldWriter(sample: sample, directory: directory)
+            writers.append(writer); return writer
+        })
+        await h.start(audio: false, window: 15)
+        await h.perform { h.recorder.onFailure = { _ in failures += 1 } }
+        let source = TimestampedSampleSource()
+        // Unlike manual advancement, hardware ingestion never waits for these
+        // deliberately stalled writers. The third finalization must stop it.
+        for frame in [0, 20, 40, 60] {
+            let sample = try source.video(frame: frame)
+            await h.perform { h.recorder.ingest(sample, isAudio: false) }
+        }
+        let stopped = try await h.recorder.diagnostics()
+        XCTAssertFalse(stopped.running); XCTAssertFalse(stopped.collecting)
+        XCTAssertEqual(stopped.pending, 0); XCTAssertEqual(stopped.finalizingWriters, 0)
+        XCTAssertEqual(stopped.leaseCount, 0); XCTAssertTrue(stopped.files.isEmpty)
+        await h.perform {
+            XCTAssertEqual(failures, 1)
+            XCTAssertEqual(writers.count, 3)
+            XCTAssertTrue(writers.allSatisfy { $0.cancellations == 1 && $0.completion != nil })
+        }
+        await h.start(audio: false, window: 15)
+        await h.perform {
+            // Recreate successful late outputs to verify the stale-generation
+            // path removes files even after a new capture has started.
+            for writer in writers {
+                do { try Data([1]).write(to: writer.url) }
+                catch { XCTFail("Could not create late writer output: \(error)") }
+                writer.completion?(.success(VideoSegment(id: UUID(), url: writer.url,
+                    start: writer.start.seconds, end: writer.end.seconds, bytes: 1)))
+            }
+        }
+        let restarted = try await h.recorder.diagnostics()
+        XCTAssertTrue(restarted.running); XCTAssertTrue(restarted.files.isEmpty)
+        XCTAssertTrue(restarted.segments.isEmpty); XCTAssertEqual(restarted.pending, 0)
+        await h.stop()
     }
 
     func testRepeatedStopRestartCancelsOldFinalizingWritersBeforeNewCapture() async throws {
