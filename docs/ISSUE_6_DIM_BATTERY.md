@@ -59,6 +59,16 @@ UI, and reachable controls at accessibility XXXL. The dim view uses a scrollable
 white-on-black content, text status (no reliance on color), descriptive labels/hints,
 VoiceOver focus on status, and an accessibility Escape action to wake.
 
+Native runs `44121676033` and `44121740447` exposed a test-navigation failure at
+accessibility XXXL before dim mode opened: `bufferButton` existed, became hittable
+but only partly visible, and subsequent full upward swipes passed it. The dim UI
+test now uses bounded, bidirectional drags toward the viewport center while retaining
+the full-frame containment and hittability requirement. It logs control geometry and
+attaches the accessibility hierarchy to make any remaining layout failure reviewable.
+The XXXL case also performs the touch save, checks completion, wakes, and verifies
+that buffering continues. This follow-up still requires a native CI rerun; the Linux
+workspace cannot execute XCUITest.
+
 Local verification: `git diff --check` and source privacy validation. This Linux
 environment has no Xcode/iOS SDK; XCTest/XCUITest compilation and execution must run
 in the integrated macOS CI after project regeneration. This branch's focused
