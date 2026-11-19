@@ -376,6 +376,10 @@ final class RollingRecorder: @unchecked Sendable {
         guard freezing, pending == 0, !audioBoundary.waiting, let continuation = snapshotContinuation else { return }
         snapshotContinuation = nil
         let (token, selection) = index.pin(endingAt: snapshotEnd)
+        // Finalizers can arrive out of order while freezing suppresses pruning.
+        // Pin the requested interval first, then remove expired unleased media
+        // before returning a snapshot, even when capture supplies no next frame.
+        ProtectedFiles.remove(index.prune(now: snapshotEnd).map(\.url))
         freezing = false
         guard !selection.isEmpty else {
             index.release(token); continuation.resume(throwing: CameraError.empty); return
