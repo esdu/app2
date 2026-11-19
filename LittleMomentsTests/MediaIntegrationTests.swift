@@ -14,6 +14,36 @@ final class MediaIntegrationTests: XCTestCase {
         try await SyntheticMovie.write(to: url, audio: audio)
         return VideoSegment(id: UUID(), url: url, start: 100, end: 102, bytes: ProtectedFiles.bytes(url))
     }
+
+    func testSyntheticFixtureStalledReadinessTimesOutWithProgressAndRemovesOutput() async throws {
+        let url = directory.appendingPathComponent("stalled.mov")
+        do {
+            try await SyntheticMovie.write(to: url, timeout: 0.05, readiness: { _ in false })
+            XCTFail("A permanently backpressured input must fail")
+        } catch {
+            let message = error.localizedDescription
+            XCTAssertTrue(message.contains("Synthetic media encoder timed out:"), message)
+            XCTAssertTrue(message.contains("stage=feeding video=0/60 ready=false"), message)
+            XCTAssertTrue(message.contains("audio=off writerStatus="), message)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testSyntheticFixtureCancellationStopsWaitingAndRemovesOutput() async throws {
+        let url = directory.appendingPathComponent("cancelled.mov")
+        let requested = expectation(description: "Encoder requested its first input")
+        let writing = Task {
+            try await SyntheticMovie.write(to: url, readiness: { _ in requested.fulfill(); return false })
+        }
+        await fulfillment(of: [requested], timeout: 5)
+        writing.cancel()
+        do {
+            try await writing.value
+            XCTFail("Canceled fixture must fail")
+        } catch is CancellationError { } catch { XCTFail("Unexpected cancellation error: \(error)") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
     func testProductionSegmentWriterProducesDecodableVideo() async throws {
         let source = try await fixture()
         let asset = AVURLAsset(url: source.url)
