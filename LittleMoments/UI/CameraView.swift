@@ -98,6 +98,7 @@ struct CameraView: View {
                     Button("OK") { model.message = nil }
                 } message: { Text(model.message ?? "") }
         }.tint(accent)
+            .background { HardwareSaveInteraction(model: model) }
             .safeAreaInset(edge: .top) {
                 if let status = model.saveStatus {
                     Label(status, systemImage: "checkmark.circle.fill")
