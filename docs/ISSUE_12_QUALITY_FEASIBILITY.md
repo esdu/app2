@@ -1,0 +1,91 @@
+# Issue #12 — gated 1080p30 assessment
+
+**Decision: no-go for production 1080p30 now; retain 720p as the default and establish #8's explicit 30 fps baseline.** A separately scoped 1080p30 prototype may proceed after #2/#7/#8 and recorder design stabilization. No physical device, sample/export capability enumeration, sustained profiling, or Xcode run was available here. The device benchmark and expanded production-harness acceptance criteria in [#12](https://github.com/esdu/app2/issues/12) remain pending. This assessment does not ship settings, enable a preset, validate a bitrate, or complete those criteria.
+
+Reviewed 2026-11-16 at app2 `a9a396118bb1dba673238a90772397ad955beb0d`, plus pinned app1 `0cb27b3f8ca5f4e4e1cccc65ec96d20c548ee7a1`. Desktop arithmetic below identifies resource risks without implying measured support or encoder bounds.
+
+## Current contract and requested/effective design
+
+Current app2 [capture](https://github.com/esdu/app2/blob/a9a396118bb1dba673238a90772397ad955beb0d/LittleMoments/Camera/CaptureEngine.swift) selects portrait 720p/BGRA with two-second target segments, permits bounded finishing work, watches frame liveness, and stops near 192 MiB of capture-directory files or below 64 MiB of available storage. [SegmentWriter](https://github.com/esdu/app2/blob/a9a396118bb1dba673238a90772397ad955beb0d/LittleMoments/Camera/SegmentWriter.swift) requests H.264 at 4,000,000 bits/s and mono AAC at 64,000 bits/s. The source has no explicit camera frame-duration configuration yet; “30 fps” is the baseline #8 must establish, not an already measured cadence.
+
+The [index](https://github.com/esdu/app2/blob/a9a396118bb1dba673238a90772397ad955beb0d/LittleMoments/Core/SegmentIndex.swift) prunes unleased completed segments above 160 MiB. Pinned files cannot be evicted: this is a pruning threshold, not an unconditional byte ceiling. New unleased history may be removed while an older save holds its lease, shortening retention. The [composer](https://github.com/esdu/app2/blob/a9a396118bb1dba673238a90772397ad955beb0d/LittleMoments/Library/ClipComposer.swift) uses HighestQuality MP4 export, whose bitrate/peak bytes are not established; the [library](https://github.com/esdu/app2/blob/a9a396118bb1dba673238a90772397ad955beb0d/LittleMoments/Library/ClipLibrary.swift) stages a protected `.partial` in Application Support and atomically renames it. That staging file and previously saved clips are outside the capture-directory guard. Its 0.25 s polling and nominal segment times do not establish a strict maximum instantaneous working set.
+
+Future requested configuration should be a typed, tolerant enum field in #3's `CameraPreferences`/injected `CameraPreferencesStore`: default 720p30, unknown/missing values fall back independently, additive field in its versioned JSON. Persist requested quality, duration, audio and camera intent; never persist capture activity or effective hardware selection. The preference agent's `updatePreferences` gate rejects changes while starting, buffering or transitioning. Keep quality stopped-only; also wait for any old save/lease to finish before switching quality initially.
+
+Resolve one immutable **effective run configuration** per explicit Start: camera unique ID/position, format identity, actual sample dimensions, pixel format/range/color metadata, min/max frame durations, codec, requested video bitrate, audio format, generation and fallback reason. The selected setting and visible status must distinguish requested/effective quality, e.g. “1080p requested · 720p30 used: unsupported camera format.” Do not change the stored request merely because one camera lacks support. Never mix incompatible dimensions, codec settings or audio intent inside one run/snapshot; each segment carries or validates the run identity, old leases remain isolated, and no preset change clears an active buffer.
+
+Offer a visible stopped-state fallback decision before a lower-resolution start, or a clear startup error if even 720p30 is unavailable. Verify initial samples against the selected format before claiming an effective configuration; reject unexpected dimensions/cadence with an actionable error. Do not silently accept 24/60 fps while labeling 30. Return from background, interruptions, thermal recovery or fallback must not automatically restart capture.
+
+## Capability ledger — no hardware entries validated
+
+| Candidate / camera | Device / iOS / build | Format + 30 fps range | Pixel format + encoder | Delivered samples / export | Result |
+| --- | --- | --- | --- | --- | --- |
+| Baseline 720p30, rear wide | Unknown / unmeasured | Pending #8 and device query | Pending NV12 range and writer checks | Dimensions, cadence, drops, orientation and color pending | Baseline implementation/profiling gate |
+| Baseline 720p30, front wide | Unknown / unmeasured | Pending independently | Pending independently | Pending, including front mirroring policy | Baseline implementation/profiling gate |
+| Optional 1080p30, rear wide | Unknown / unmeasured | Pending independently | H.264 settings/start/encode/decode pending | Pending; no chosen validated bitrate | No-go pending evidence |
+| Optional 1080p30, front wide | Unknown / unmeasured | Pending independently | Pending independently | Pending; no chosen validated bitrate | No-go pending evidence |
+| 4K or 60 fps, any camera | Unknown / unmeasured | Not evaluated | Not evaluated | Not evaluated | Separate future work; unavailable in product |
+
+For each actual device/OS/camera, enumerate `formats`, dimensions and **both** ends of `videoSupportedFrameRateRanges` (`min <= 30 <= max`), choose a compatible format, lock configuration safely, set both active frame durations to 1/30, and unlock with guaranteed cleanup. Setting a session preset can reset format/frame duration selection; configure these consistently inside a session configuration transaction. Check `availableVideoCVPixelFormatTypes` after format choice; it can change with active format. Follow #8's supported NV12 preference/accurate fallback, preserving correct range/color and portrait output. Format enumeration alone proves neither encoder feasibility nor delivered cadence. ([Apple active format](https://developer.apple.com/documentation/avfoundation/avcapturedevice/activeformat), [frame duration restrictions](https://developer.apple.com/documentation/avfoundation/avcapturedevice/activevideominframeduration), [supported pixel formats](https://developer.apple.com/documentation/avfoundation/avcapturevideodataoutput/availablevideocvpixelformattypes))
+
+Validate output settings/file-type compatibility with `AVAssetWriter.canApply`, then `canAdd`, start/append/finish, decode actual exports and inspect cadence. `canApply` checks settings compatibility, not sustained hardware capacity or thermal stability. Preserve the existing protected-file and failure cleanup paths. ([Apple settings check](https://developer.apple.com/documentation/avfoundation/avassetwriter/canapply(outputsettings:formediatype:)))
+
+App1's [preset table](https://github.com/esdu/app1/blob/0cb27b3f8ca5f4e4e1cccc65ec96d20c548ee7a1/RewindCam/Model/RecordingSettings.swift#L46-L64) requests 10 Mb/s for 1080p30 and 50 Mb/s for 4K60, incompatible with simply reusing app2's retention caps. Its [format fallback](https://github.com/esdu/app1/blob/0cb27b3f8ca5f4e4e1cccc65ec96d20c548ee7a1/RewindCam/Engine/CameraFrameSource.swift#L118-L140) checks maximum fps but omits the lower endpoint; do not copy that assumption or its [automatic capture teardown/restart on quality changes](https://github.com/esdu/app1/blob/0cb27b3f8ca5f4e4e1cccc65ec96d20c548ee7a1/RewindCam/Model/AppModel.swift#L180-L202).
+
+## Reproducible storage screening
+
+Run `python3 scripts/quality_budget.py` for the following table and `python3 scripts/quality_budget.py --self-test` for arithmetic/cap-boundary checks. Units: decimal Mb/s and binary MiB. This calculator does not run AVFoundation or assert bitrate ceilings. Apple defines `AVVideoAverageBitRateKey` as an **average** compression rate; it is not a guaranteed peak-file bound. ([Apple average bitrate](https://developer.apple.com/documentation/avfoundation/avvideoaveragebitratekey))
+
+Scenario assumptions, deliberately visible and replaceable with measured/enforced bounds:
+
+- Audio on at 64 kb/s; `r = (video_bps + 64,000) / 8 × 1.25 × 1.02` bytes/s. The 25% VBR and 2% container allowances are **unvalidated planning margins**, not encoder guarantees. Audio-off is slightly smaller; it does not resolve the long-window lease risk.
+- Two-second nominal segments; reserve `T + 2` seconds and `ceil(T/2) + 1` files for one full current window including a boundary segment. Add 64 KiB per file as an illustrative metadata allowance. Irregular sample timing or longer segments require a larger measured bound.
+- Reserve one active plus three finishing writers: another 8 s at `r`, plus four file allowances. This conservatively over-reserves some current interleavings; pending-writer count still must be enforced and tested. It does not bound encoder RAM.
+- A save can retain a disjoint older full window while capture builds the next one. Budget the **union**, up to twice the completed window/file allowance. Overlapping old/current files are counted only once in reality; the disjoint scenario tests a slow save lasting at least one window. One save at a time bounds lease count, not its lifetime or bytes.
+- Export planning reserve is `2 × r × T + 1 MiB` in addition to capture. HighestQuality currently has no established relationship to this number, so it is a **sensitivity scenario**, not a proven maximum. Export must gain an enforced/preflighted budget or demonstrate an adequate measured reserve before production can promise retention. Previously committed library files are additional persistent disk usage, not temporary headroom.
+
+| Mb/s | Window s | Completed | Steady capture | With old lease: completed | With old lease: capture | Capture + export reserve |
+| --- | --- | --- | --- | --- | --- | --- |
+| 4 | 15 | 11.1 | 16.3 | 22.1 | 27.3 | 46.8 |
+| 4 | 30 | 20.8 | 26.0 | 41.5 | 46.7 | 84.8 |
+| 4 | 60 | 40.2 | 45.4 | 80.5 | 85.7 | 160.8 |
+| 4 | 120 | 79.2 | 84.4 | 158.3 | 163.5 | 312.8 |
+| 5 | 15 | 13.6 | 20.1 | 27.3 | 33.7 | 57.8 |
+| 5 | 30 | 25.6 | 32.0 | 51.3 | 57.7 | 104.8 |
+| 5 | 60 | 49.7 | 56.1 | 99.3 | 105.7 | 199.1 |
+| 5 | 120 | 97.7 | 104.1 | 195.4 | 201.8 | 387.6 |
+| 6 | 15 | 16.2 | 23.9 | 32.5 | 40.1 | 68.7 |
+| 6 | 30 | 30.5 | 38.1 | 61.0 | 68.6 | 124.9 |
+| 6 | 60 | 59.1 | 66.7 | 118.2 | 125.8 | 237.4 |
+| 6 | 120 | 116.3 | 123.9 | 232.5 | 240.1 | 462.3 |
+
+Compare completed columns to **160 MiB** and capture columns to **strictly less than 192 MiB**; do not compare export-inclusive totals to a guard that does not cover that directory. At 120 s, 5 and 6 Mb/s violate both thresholds in the leased scenario. Even 4 Mb/s leaves only about **1.7 MiB** below the completed pruning threshold, before uncertainty/longer segments: less than a proposed 10% reserve (16 MiB). It fails that screening margin, despite being arithmetically below the current thresholds. This is a risk in the existing 4 Mb/s baseline too, not evidence that its longest slow-save scenario was physically validated.
+
+Capture plus the illustrative export reserve requires 312.8 MiB at 4 Mb/s/120 s; adding the existing 64 MiB low-storage reserve gives **376.8 MiB of total scenario footprint** on top of already committed files/other app storage. At save start, preflight the **remaining growth plus staging** against actual free space; do not subtract already allocated capture twice. The 64 MiB reactive stop alone cannot reserve a 149.2 MiB staging allowance, and source leases must never be deleted to make export fit. If insufficient space, reject the save clearly and preserve existing clips; if a running capture stops, report the stop and require explicit restart.
+
+No 4/5/6 Mb/s candidate is approved for every offered duration. Detail preservation at 1080p and 4 Mb/s is also unknown; increasing pixels at the same bitrate does not prove a better exported moment. Product alternatives for a future reviewed proposal include a separately displayed shorter maximum duration or a lower validated bitrate with acceptable visual quality, or retaining 720p only. Do not silently shorten a selected 120 s history or raise either cap. #10 post-roll extends source leases/output beyond the selected pre-roll; recompute its fixed pre+post interval and longer lease lifetime (including Off/5/10 s) rather than reuse this no-post-roll table. #9 export and #11 continuous-writer changes also require recalculation using their actual measured working sets.
+
+## Why 4K/60 fps stay deferred
+
+App1's 50 Mb/s 4K60 setting uses **715.3 MiB for 120 s of video payload alone**, before audio, container/VBR, writers, leases or export, exceeding both app2 capture budgets several times. Its 35 Mb/s 4K30 setting is already 500.7 MiB of video payload. Lower bitrates would require a different validated quality/resource proposal; format availability cannot waive the caps.
+
+Nominal uncompressed NV12 costs are 1.5 bytes/pixel before row alignment, pool overhead or copies: 720p = 1.32 MiB/frame, 1080p = 2.97 MiB/frame, 4K = 11.87 MiB/frame. At 30/30/60 fps this is 39.6/89.0/711.9 MiB/s of single-pass pixel payload respectively. Thus 1080p30 is 2.25× and 4K60 is 18× the nominal 720p30 pixel rate. BGRA is 4 bytes/pixel instead. These calculations motivate measurement; they establish no CPU, battery, actual memory use, encoder-surface count or throughput result. Device/encoder limits, output bitrate, thermal pressure, dropped frames and energy remain separate gates even if a short clip encodes successfully.
+
+## Pressure policy and validation gates
+
+Preserve #7's policy: serious thermal pressure gives an honest warning; critical pauses capture, blocks starts while critical, and requires explicit restart after cooling. Do not claim “reduced quality” while still using the same format. Initially stop with a visible explanation rather than changing live 1080p to 720p and destroying/mixing history. A user can select 720p while stopped and Start again. A later automatic policy needs explicit product consent, generation separation and hysteresis; it is outside this proposal. Capture-device system pressure is distinct from `ProcessInfo` thermal state; observe/log both in profiling and handle interruption/shutdown through the existing stop path. Apple documents that shutdown pressure interrupts input. ([Apple camera pressure](https://developer.apple.com/documentation/avfoundation/avcapturedevice/systempressurestate-swift.property))
+
+| Required evidence | Acceptance / observable result | Current status |
+| --- | --- | --- |
+| #2 production harness extended to both candidate resolutions | Timestamped NV12 color bars and audio: decode exports for dimensions, color/range, upright portrait, frame identity/count, A/V offsets and exact early/full-window trimming | Pending future prototype; current assessment adds no Swift tests |
+| Stopped-only preference/fallback tests | Unsupported camera/fps/encoder rejects or shows effective fallback; no live reset, cross-generation media or automatic restart; failed start leaves honest status | Pending #3/#8 and future quality implementation |
+| Lease and pressure stress | Boundary/early/repeated saves, slow export beyond T, delayed finish, byte-limit pruning, low disk and thermal stop retain leases; bounded writers/files/bytes; clear partial-save failure with protected committed clips intact | Pending actual recorder design after #2/#9/#11 |
+| Physical capability ledger | Actual iPhone model, OS/build, camera ID/format, pixel type, requested/effective bitrate, sample dimensions/cadence/drops, exported dimensions/transform/audio | Unmeasured for all device/camera tuples |
+| Matched sustained capture | Each proposed device/camera at 120 s, audio on/off, high motion/detail/low light, repeated saves; longest slow-save lease; thermal and low-storage scenarios | No physical run performed |
+| Quality/resource decision | Measured/enforced peak bytes including export, enough retained seconds at all windows, declared safety margin, acceptable decoded detail, bounded RAM/encoder work, no lifecycle/privacy regression | No candidate passes release gate yet |
+
+For physical runs, compare 720p30 against candidate 1080p30 at 4/5/6 Mb/s on the **same device/OS/build/camera**, matched scene, brightness/dim mode, voice off, audio setting, battery start range, charger state, ambient temperature, duration and save schedule. Use at least two-hour soaks at the longest offered window, repeat with order varied, and record actual conditions/duration rather than implying a planned run happened. Use supported development controls/fakes for policy tests and record separately from genuine device thermal/low-disk observations; never manufacture dangerous heat.
+
+Collect actual retained seconds and per-directory high-water bytes/file counts, writer/lease/export counts and duration, memory trend and encoder/capture CPU, sample timestamps/cadence/drops, save latency p50/p95, successful/failed saves, decoded frame/audio alignment, thermal/system-pressure state, battery delta and available energy instrumentation with uncertainty. Include interrupted/early saves, restart during old export, front/back switching while stopped, and foreground/background/lock transitions. Compare decoded detail using the same challenging scenes and predeclared product criteria. Fake/simulator passing results prove control paths only; physical “supported” status requires a completed ledger and sustained evidence.
+
+Keep 160/192 MiB guards, low-disk stop, finishing-work cap, watchdog, full file protection/backup exclusion, atomic local publication and explicit restart intact. A future prototype must enforce/predict its entire temporary working set, preserve a stated margin under both capture thresholds, and ensure exported staging headroom rather than treating an average bitrate as a hard bound. Any new API requires review under existing source/built-app/archive privacy validation; this assessment changes no permissions/manifest/runtime behavior. Until these gates pass, 1080p30 remains deferred and 4K/60 fps require a separate issue.
