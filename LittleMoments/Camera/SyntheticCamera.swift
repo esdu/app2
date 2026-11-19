@@ -36,75 +36,168 @@ final class SyntheticCamera: CameraService, @unchecked Sendable {
 /// Deterministic color frames and optional sine wave, encoded with the real system codecs.
 /// Used by UI tests and composition integration tests; it never accesses a camera.
 enum SyntheticMovie {
-    static func write(to url: URL, audio: Bool = false) async throws {
-        try await Task.detached(priority: .userInitiated) {
-            let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
-            let video = AVAssetWriterInput(mediaType: .video, outputSettings: [
+    // The readiness override is a DEBUG-only fault seam for a permanently
+    // backpressured input. Ordinary fixtures always use the encoder's signal.
+    static func write(to url: URL, audio: Bool = false, timeout: TimeInterval = 20,
+                      readiness: @escaping (AVAssetWriterInput) -> Bool = { $0.isReadyForMoreMediaData }) async throws {
+        let encoding = try Encoding(url: url, audio: audio, timeout: timeout, readiness: readiness)
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in encoding.start(continuation) }
+        }, onCancel: { encoding.cancel() })
+    }
+
+    /// AVFoundation drives each input on this dedicated queue. No cooperative
+    /// task repeatedly polls readiness, and neither input waits for the other.
+    private final class Encoding: @unchecked Sendable {
+        private let queue = DispatchQueue(label: "SyntheticMovie.Encoding", qos: .userInitiated)
+        private let writer: AVAssetWriter
+        private let video: AVAssetWriterInput
+        private let adaptor: AVAssetWriterInputPixelBufferAdaptor
+        private let audio: AVAssetWriterInput?
+        private let url: URL
+        private let timeout: TimeInterval
+        private let readiness: (AVAssetWriterInput) -> Bool
+        private var continuation: CheckedContinuation<Void, Error>?
+        private var timer: DispatchSourceTimer?
+        private var cancelled = false
+        private var settled = false
+        private var finishing = false
+        private var requesting = false
+        private var videoFrame = 0
+        private var audioFrame = 0
+
+        init(url: URL, audio: Bool, timeout: TimeInterval,
+             readiness: @escaping (AVAssetWriterInput) -> Bool) throws {
+            self.url = url; self.timeout = timeout; self.readiness = readiness
+            writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+            video = AVAssetWriterInput(mediaType: .video, outputSettings: [
                 AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 160, AVVideoHeightKey: 120])
-            let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: video,
+            adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: video,
                 sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
                                               kCVPixelBufferWidthKey as String: 160, kCVPixelBufferHeightKey as String: 120])
-            writer.add(video)
-            let audioInput: AVAssetWriterInput? = audio ? AVAssetWriterInput(mediaType: .audio, outputSettings: [
+            self.audio = audio ? AVAssetWriterInput(mediaType: .audio, outputSettings: [
                 AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 44_100,
                 AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 64_000]) : nil
-            if let audioInput { writer.add(audioInput) }
-            guard writer.startWriting() else { throw writer.error ?? CameraError.unavailable }
-            writer.startSession(atSourceTime: .zero)
-            let deadline = ContinuousClock.now.advanced(by: .seconds(20))
-            do {
-                // Each input must advance independently and signal EOF independently.
-                // Waiting on one track inside the other's pump can deadlock interleaving.
-                try await withThrowingTaskGroup(of: Void.self) { group in
-                    group.addTask {
-                        for frame in 0..<60 {
-                            try await waitUntilReady(video, writer: writer, deadline: deadline)
-                            var pixel: CVPixelBuffer?
-                            guard let pool = adaptor.pixelBufferPool,
-                                  CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pixel) == kCVReturnSuccess,
-                                  let pixel else { throw CameraError.unavailable }
-                            CVPixelBufferLockBaseAddress(pixel, [])
-                            let base = CVPixelBufferGetBaseAddress(pixel)!.assumingMemoryBound(to: UInt8.self)
-                            let rowBytes = CVPixelBufferGetBytesPerRow(pixel)
-                            for y in 0..<120 { for x in 0..<160 {
-                                let offset = y * rowBytes + x * 4
-                                base[offset] = 255; base[offset + 1] = UInt8(80 + frame * 2)
-                                base[offset + 2] = UInt8(x); base[offset + 3] = UInt8(y)
-                            } }
-                            CVPixelBufferUnlockBaseAddress(pixel, [])
-                            guard adaptor.append(pixel, withPresentationTime: CMTime(value: Int64(frame), timescale: 30)) else {
-                                throw writer.error ?? CameraError.unavailable
-                            }
-                        }
-                        video.markAsFinished()
-                    }
-                    if let audioInput { group.addTask {
-                        for frame in 0..<60 {
-                            try await waitUntilReady(audioInput, writer: writer, deadline: deadline)
-                            guard audioInput.append(try tone(frame: frame)) else { throw writer.error ?? CameraError.unavailable }
-                        }
-                        audioInput.markAsFinished()
-                    } }
-                    try await group.waitForAll()
-                }
-                writer.endSession(atSourceTime: CMTime(value: 2, timescale: 1))
-                await writer.finishWriting()
-                guard writer.status == .completed else { throw writer.error ?? CameraError.unavailable }
-                try ProtectedFiles.protect(url)
-            } catch {
-                writer.cancelWriting(); ProtectedFiles.remove([url]); throw error
-            }
-        }.value
-    }
-    private static func waitUntilReady(_ input: AVAssetWriterInput, writer: AVAssetWriter,
-                                       deadline: ContinuousClock.Instant) async throws {
-        while !input.isReadyForMoreMediaData {
-            try Task.checkCancellation()
-            guard writer.status == .writing else { throw writer.error ?? CameraError.unavailable }
-            guard ContinuousClock.now < deadline else { throw CameraError.writer("Synthetic media encoder timed out.") }
-            try await Task.sleep(for: .milliseconds(2))
+            writer.add(video)
+            if let audioInput = self.audio { writer.add(audioInput) }
         }
-        try Task.checkCancellation()
+
+        func start(_ continuation: CheckedContinuation<Void, Error>) {
+            queue.async { [self] in
+                self.continuation = continuation
+                guard !cancelled else { settle(.failure(CancellationError())); return }
+                guard writer.startWriting() else {
+                    settle(.failure(writer.error ?? CameraError.unavailable)); return
+                }
+                writer.startSession(atSourceTime: .zero)
+                let timer = DispatchSource.makeTimerSource(queue: queue)
+                timer.schedule(deadline: .now() + timeout)
+                timer.setEventHandler { [weak self] in self?.timedOut() }
+                self.timer = timer; timer.resume()
+                requesting = true
+                video.requestMediaDataWhenReady(on: queue) { [self] in pumpVideo() }
+                audio?.requestMediaDataWhenReady(on: queue) { [self] in pumpAudio() }
+            }
+        }
+
+        func cancel() {
+            queue.async { [self] in
+                cancelled = true
+                if continuation != nil { settle(.failure(CancellationError())) }
+            }
+        }
+
+        private func pumpVideo() {
+            guard !settled, !finishing, videoFrame < 60 else { return }
+            do {
+                while videoFrame < 60, readiness(video) {
+                    guard writer.status == .writing else { throw writer.error ?? CameraError.unavailable }
+                    let pixel = try SyntheticMovie.pixel(frame: videoFrame, adaptor: adaptor)
+                    guard adaptor.append(pixel, withPresentationTime: CMTime(value: Int64(videoFrame), timescale: 30)) else {
+                        throw writer.error ?? CameraError.unavailable
+                    }
+                    videoFrame += 1
+                }
+                if videoFrame == 60 { video.markAsFinished(); finishIfReady() }
+            } catch { settle(.failure(error)) }
+        }
+
+        private func pumpAudio() {
+            guard !settled, !finishing, audioFrame < 60, let audio else { return }
+            do {
+                while audioFrame < 60, readiness(audio) {
+                    guard writer.status == .writing else { throw writer.error ?? CameraError.unavailable }
+                    guard audio.append(try SyntheticMovie.tone(frame: audioFrame)) else {
+                        throw writer.error ?? CameraError.unavailable
+                    }
+                    audioFrame += 1
+                }
+                if audioFrame == 60 { audio.markAsFinished(); finishIfReady() }
+            } catch { settle(.failure(error)) }
+        }
+
+        private func finishIfReady() {
+            guard videoFrame == 60, audio == nil || audioFrame == 60 else { return }
+            finishing = true
+            writer.endSession(atSourceTime: CMTime(value: 2, timescale: 1))
+            writer.finishWriting { [weak self] in
+                guard let self else { return }
+                self.queue.async { [self] in
+                    guard !settled else { return }
+                    do {
+                        guard writer.status == .completed else { throw writer.error ?? CameraError.unavailable }
+                        try ProtectedFiles.protect(url)
+                        settle(.success(()))
+                    } catch { settle(.failure(error)) }
+                }
+            }
+        }
+
+        private func timedOut() {
+            guard !settled else { return }
+            let audioProgress = audio == nil ? "off" : "\(audioFrame)/60 ready=\(readiness(audio!))"
+            let status: String
+            switch writer.status {
+            case .unknown: status = "unknown"
+            case .writing: status = "writing"
+            case .completed: status = "completed"
+            case .failed: status = "failed"
+            case .cancelled: status = "cancelled"
+            @unknown default: status = "unrecognized(\(writer.status.rawValue))"
+            }
+            let details = "stage=\(finishing ? "finishing" : "feeding") video=\(videoFrame)/60 ready=\(readiness(video)) " +
+                "audio=\(audioProgress) writerStatus=\(status) error=\(String(describing: writer.error))"
+            settle(.failure(CameraError.writer("Synthetic media encoder timed out: " + details)))
+        }
+
+        private func settle(_ result: Result<Void, Error>) {
+            guard !settled, let continuation else { return }
+            settled = true; self.continuation = nil
+            timer?.cancel(); timer = nil
+            if requesting { video.stopRequestingMediaData(); audio?.stopRequestingMediaData() }
+            if case .failure = result {
+                if writer.status == .writing || writer.status == .unknown { writer.cancelWriting() }
+                ProtectedFiles.remove([url])
+            }
+            continuation.resume(with: result)
+        }
+    }
+
+    private static func pixel(frame: Int, adaptor: AVAssetWriterInputPixelBufferAdaptor) throws -> CVPixelBuffer {
+        var pixel: CVPixelBuffer?
+        guard let pool = adaptor.pixelBufferPool,
+              CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pixel) == kCVReturnSuccess,
+              let pixel else { throw CameraError.unavailable }
+        CVPixelBufferLockBaseAddress(pixel, [])
+        let base = CVPixelBufferGetBaseAddress(pixel)!.assumingMemoryBound(to: UInt8.self)
+        let rowBytes = CVPixelBufferGetBytesPerRow(pixel)
+        for y in 0..<120 { for x in 0..<160 {
+            let offset = y * rowBytes + x * 4
+            base[offset] = 255; base[offset + 1] = UInt8(80 + frame * 2)
+            base[offset + 2] = UInt8(x); base[offset + 3] = UInt8(y)
+        } }
+        CVPixelBufferUnlockBaseAddress(pixel, [])
+        return pixel
     }
     private static func tone(frame: Int) throws -> CMSampleBuffer {
         let count = 1_470
