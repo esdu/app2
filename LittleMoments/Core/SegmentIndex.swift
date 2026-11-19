@@ -17,6 +17,7 @@ struct SegmentIndex {
     var window: Double = 30
     let byteLimit: Int64
     init(byteLimit: Int64 = 160 * 1_024 * 1_024) { self.byteLimit = byteLimit }
+    var leaseCount: Int { leases.count }
     var bytes: Int64 { segments.reduce(0) { $0 + $1.bytes } }
     var duration: Double {
         let current = segments.filter { !retired.contains($0.id) }
@@ -30,10 +31,21 @@ struct SegmentIndex {
         segments.sort { $0.start < $1.start }
     }
     mutating func pin(endingAt end: Double) -> (UUID, [VideoSegment]) {
-        let selection = segments.filter { !retired.contains($0.id) && $0.end > end - window && $0.start < end }
+        pin(startingAt: end - window, endingAt: end)
+    }
+    mutating func pin(startingAt start: Double, endingAt end: Double) -> (UUID, [VideoSegment]) {
+        let selection = segments.filter { !retired.contains($0.id) && $0.end > start && $0.start < end }
         let token = UUID()
         leases[token] = Set(selection.map(\.id))
         return (token, selection)
+    }
+    mutating func extend(_ token: UUID, startingAt start: Double, endingAt end: Double) {
+        guard leases[token] != nil else { return }
+        leases[token]?.formUnion(segments.filter { !retired.contains($0.id) && $0.end > start && $0.start < end }.map(\.id))
+    }
+    func selection(for token: UUID) -> [VideoSegment] {
+        let ids = leases[token] ?? []
+        return segments.filter { ids.contains($0.id) }
     }
     mutating func release(_ token: UUID) { leases.removeValue(forKey: token) }
     mutating func prune(now: Double) -> [VideoSegment] {

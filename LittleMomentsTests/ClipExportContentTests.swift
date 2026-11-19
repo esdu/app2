@@ -121,7 +121,8 @@ final class ClipExportContentTests: XCTestCase {
     private func oriented(_ segment: VideoSegment, transform: CGAffineTransform) async throws -> VideoSegment {
         let asset = AVURLAsset(url: segment.url)
         let track = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
-        let format = try XCTUnwrap(track.formatDescriptions.first as? CMFormatDescription)
+        let rawFormat = try XCTUnwrap(track.formatDescriptions.first)
+        let format = rawFormat as! CMFormatDescription
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
         reader.add(output)

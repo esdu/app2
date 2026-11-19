@@ -163,5 +163,8 @@ final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSamp
         }
     }
     func snapshot() async throws -> BufferSnapshot { try await recorder.snapshot() }
+    func snapshot(postRoll: Double, onProgress: @escaping (Double) -> Void) async throws -> BufferSnapshot {
+        try await recorder.snapshot(postRoll: postRoll, onProgress: onProgress)
+    }
     func release(_ snapshot: BufferSnapshot) async { await recorder.release(snapshot) }
 }

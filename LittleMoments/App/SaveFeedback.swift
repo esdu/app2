@@ -8,10 +8,12 @@ extension ClipLibrary: MomentSaving {}
 
 enum SaveOutcome: Equatable {
     case success
+    case partial
     case failure(String)
     var text: String {
         switch self {
         case .success: return "Moment saved to your library"
+        case .partial: return "Shorter moment saved. Recording stopped before post-roll finished."
         case .failure(let reason): return reason
         }
     }
@@ -22,7 +24,10 @@ enum SaveOutcome: Equatable {
 }
 @MainActor final class SystemSaveHaptics: SaveHaptics {
     func notify(_ outcome: SaveOutcome) {
-        UINotificationFeedbackGenerator().notificationOccurred(outcome == .success ? .success : .error)
+        switch outcome {
+        case .success, .partial: UINotificationFeedbackGenerator().notificationOccurred(.success)
+        case .failure: UINotificationFeedbackGenerator().notificationOccurred(.error)
+        }
     }
 }
 

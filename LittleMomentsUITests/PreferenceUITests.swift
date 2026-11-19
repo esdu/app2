@@ -19,8 +19,15 @@ final class PreferenceUITests: XCTestCase {
         reveal(picker, in: app)
         XCTAssertTrue(picker.buttons["30s"].isSelected)
         picker.buttons["60s"].tap()
-        let audio = app.buttons["audioToggle"]
+        let postRoll = app.segmentedControls["postRollPicker"]
+        reveal(postRoll, in: app)
+        XCTAssertTrue(postRoll.buttons["Off"].isSelected)
+        postRoll.buttons["5s after"].tap()
+        // Toggle's button styling does not guarantee a button accessibility type.
+        // Identify the preference by its stable ID and verify its public semantics.
+        let audio = app.descendants(matching: .any).matching(identifier: "audioToggle").firstMatch
         reveal(audio, in: app)
+        XCTAssertEqual(audio.label, "Record audio")
         XCTAssertEqual(audio.value as? String, "On")
         audio.tap()
         let camera = app.buttons["switchCameraButton"]
@@ -39,6 +46,8 @@ final class PreferenceUITests: XCTestCase {
         XCTAssertFalse(app.buttons["saveButton"].isEnabled)
         reveal(picker, in: app)
         XCTAssertTrue(picker.buttons["60s"].isSelected)
+        reveal(postRoll, in: app)
+        XCTAssertTrue(postRoll.buttons["5s after"].isSelected)
         reveal(audio, in: app)
         XCTAssertEqual(audio.value as? String, "Off")
         XCTAssertEqual(camera.value as? String, "Front")
@@ -49,6 +58,8 @@ final class PreferenceUITests: XCTestCase {
         XCTAssertTrue(start.waitForExistence(timeout: 10))
         reveal(picker, in: app)
         XCTAssertTrue(picker.buttons["30s"].isSelected)
+        reveal(postRoll, in: app)
+        XCTAssertTrue(postRoll.buttons["Off"].isSelected)
         reveal(audio, in: app)
         XCTAssertEqual(audio.value as? String, "On")
         XCTAssertEqual(camera.value as? String, "Rear")

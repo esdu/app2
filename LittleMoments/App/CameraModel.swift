@@ -16,12 +16,14 @@ private final class CaptureCallbackGeneration: @unchecked Sendable {
     var duration: Double { preferences.duration }
     var audio: Bool { preferences.audio }
     var front: Bool { preferences.camera == .front }
+    var postRoll: Double { preferences.postRoll }
     @Published private(set) var phase: CapturePhase = .stopped
     @Published private(set) var seconds = 0.0
     @Published private(set) var bytes: Int64 = 0
     @Published private(set) var transitioning = false
     @Published private(set) var saving = false
     @Published private(set) var thermalState: ThermalLevel
+    @Published private(set) var postRollRemaining: Double?
     @Published var message: String?
     @Published private(set) var saveStatus: String?
     @Published private(set) var foreground = true
@@ -36,6 +38,7 @@ private final class CaptureCallbackGeneration: @unchecked Sendable {
     private var feedbackDismissal: (any FeedbackCancellation)?
     private var feedbackToken = UUID()
     private var pendingSaveOutcome: SaveOutcome?
+    private var saveProgressToken = UUID()
     private var operation = UUID()
     private var transitionCount = 0
     private let preferencesStore: CameraPreferencesStore
@@ -143,7 +146,7 @@ private final class CaptureCallbackGeneration: @unchecked Sendable {
     }
     var thermalWarning: String? { ThermalPolicy(state: thermalState).warning }
     var canStart: Bool {
-        foreground && cameraScreenVisible && !transitioning && phase != .buffering && !ThermalPolicy(state: thermalState).blocksCapture
+        foreground && cameraScreenVisible && !transitioning && !saving && phase != .buffering && !ThermalPolicy(state: thermalState).blocksCapture
     }
     private func refreshThermalState() {
         let current = thermalMonitor.state
@@ -153,7 +156,7 @@ private final class CaptureCallbackGeneration: @unchecked Sendable {
         // Keep the save task alive so its existing success/failure path releases its own lease.
         stop(paused: true)
     }
-    var canChangePreferences: Bool { phase != .buffering && phase != .starting && !transitioning }
+    var canChangePreferences: Bool { phase != .buffering && phase != .starting && !transitioning && !saving }
     func updatePreferences(_ edit: (inout CameraPreferences) -> Void) {
         guard canChangePreferences else { return }
         var updated = preferences
@@ -169,6 +172,10 @@ private final class CaptureCallbackGeneration: @unchecked Sendable {
         updatePreferences { $0.duration = duration }
     }
     func setAudio(_ audio: Bool) { updatePreferences { $0.audio = audio } }
+    func setPostRoll(_ value: Double) {
+        guard CameraPreferences.supportedPostRolls.contains(value) else { return }
+        updatePreferences { $0.postRoll = value }
+    }
     func switchCamera() { updatePreferences { $0.camera = $0.camera == .front ? .rear : .front } }
     func setCameraScreenVisible(_ visible: Bool) { cameraScreenVisible = visible }
     var canSave: Bool {
@@ -178,15 +185,26 @@ private final class CaptureCallbackGeneration: @unchecked Sendable {
     func save() {
         guard canSave else { return }
         saving = true
+        let requestedPostRoll = postRoll
+        let progressToken = UUID(); saveProgressToken = progressToken
+        postRollRemaining = requestedPostRoll > 0 ? requestedPostRoll : nil
         Task {
             let outcome: SaveOutcome
             do {
-                let snapshot = try await camera.snapshot()
-                do { try await saver.save(snapshot); outcome = .success }
+                let snapshot = try await camera.snapshot(postRoll: requestedPostRoll) { [weak self] remaining in
+                    Task { @MainActor in
+                        guard let self, self.saving, self.saveProgressToken == progressToken else { return }
+                        self.postRollRemaining = remaining > 0 ? remaining : nil
+                    }
+                }
+                saveProgressToken = UUID(); postRollRemaining = nil
+                do { try await saver.save(snapshot); outcome = snapshot.isTruncated ? .partial : .success }
                 catch { outcome = .failure(error.localizedDescription) }
                 await camera.release(snapshot)
             } catch { outcome = .failure(error.localizedDescription) }
             saving = false
+            saveProgressToken = UUID()
+            postRollRemaining = nil
             if foreground { presentSaveOutcome(outcome, playHaptics: true) }
             else { pendingSaveOutcome = outcome }
         }
@@ -195,7 +213,7 @@ private final class CaptureCallbackGeneration: @unchecked Sendable {
         if playHaptics { haptics.notify(outcome) }
         announcer.announce(outcome.text)
         switch outcome {
-        case .success:
+        case .success, .partial:
             clearSaveStatus()
             saveStatus = outcome.text
             let token = feedbackToken
