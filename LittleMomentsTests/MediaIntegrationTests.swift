@@ -32,8 +32,14 @@ final class MediaIntegrationTests: XCTestCase {
     func testSyntheticFixtureCancellationStopsWaitingAndRemovesOutput() async throws {
         let url = directory.appendingPathComponent("cancelled.mov")
         let requested = expectation(description: "Encoder requested its first input")
+        let lock = NSLock()
+        var fulfilled = false
         let writing = Task {
-            try await SyntheticMovie.write(to: url, readiness: { _ in requested.fulfill(); return false })
+            try await SyntheticMovie.write(to: url, readiness: { _ in
+                lock.lock(); defer { lock.unlock() }
+                if !fulfilled { fulfilled = true; requested.fulfill() }
+                return false
+            })
         }
         await fulfillment(of: [requested], timeout: 5)
         writing.cancel()
