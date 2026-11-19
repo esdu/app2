@@ -95,7 +95,7 @@ final class ContinuousSnapshotTests: XCTestCase {
             XCTAssertEqual(snapshot.end, source.origin + 0.7, accuracy: 0.0001)
             let output = root.appendingPathComponent(UUID().uuidString + ".mp4")
             try await ClipComposer().compose(snapshot, to: output)
-            try assertMedia(output, markers: Array(0..<7), sourceStart: 0, duration: 0.7, frameDuration: 0.1)
+            try await assertMedia(output, markers: Array(0..<7), sourceStart: 0, duration: 0.7, frameDuration: 0.1)
             await h.recorder.release(snapshot); await h.stop()
             let final = try await h.recorder.diagnostics(); XCTAssertTrue(final.files.isEmpty)
         }
@@ -106,32 +106,77 @@ final class ContinuousSnapshotTests: XCTestCase {
             let h = await harness(window: window)
             let source = TimestampedSampleSource(origin: 9_000, frameDuration: CMTime(value: 1, timescale: 2))
             var previous = 0
-            // Truncated warmup; then each window and expiry; all trigger mid-segment.
-            for endpoint in [3, Int(window * 2) + 7, Int(window * 2) + 11] {
-                try await h.feed(source, previous..<endpoint)
-                let snapshot = try await h.experiment.snapshot(.continuousMOV)
-                XCTAssertEqual(snapshot.end, source.origin + Double(endpoint) / 2, accuracy: 0.0001)
-                let first = max(0, endpoint - Int(window * 2))
-                let staging = root.appendingPathComponent("stage-" + UUID().uuidString)
-                try ProtectedFiles.directory(staging)
-                let output = staging.appendingPathComponent("clip.partial")
-                // Feed during export; no unintended post-trigger frames may leak.
-                async let exported: Void = ClipComposer().compose(snapshot, to: output)
-                try await h.feed(source, endpoint..<(endpoint + 1))
-                let inFlight = try await h.experiment.workingSet(stagingDirectory: staging)
-                XCTAssertLessThan(inFlight.totalBytes, 192 * 1_024 * 1_024)
-                try await exported
-                let census = try await h.experiment.workingSet(stagingDirectory: staging)
-                XCTAssertEqual(census.stagingBytes, ProtectedFiles.bytes(output))
-                XCTAssertGreaterThan(census.stagingBytes, 0)
-                XCTAssertLessThan(census.captureBytes, 192 * 1_024 * 1_024)
-                // Measured fixture bound includes export staging, not only index bytes.
-                XCTAssertLessThan(census.totalBytes, 192 * 1_024 * 1_024)
-                try assertMedia(output, markers: Array(first..<endpoint), sourceStart: Double(first) / 2,
-                                duration: Double(endpoint - first) / 2, frameDuration: 0.5)
-                await h.recorder.release(snapshot)
-                try FileManager.default.removeItem(at: staging)
-                previous = endpoint + 1
+            do {
+                // Truncated warmup; then each window and expiry; all trigger mid-segment.
+                for endpoint in [3, Int(window * 2) + 7, Int(window * 2) + 11] {
+                    try await h.feed(source, previous..<endpoint)
+                    let snapshot = try await h.experiment.snapshot(.continuousMOV)
+                    XCTAssertEqual(snapshot.end, source.origin + Double(endpoint) / 2, accuracy: 0.0001)
+                    XCTAssertEqual(snapshot.requestedEnd, snapshot.end, accuracy: 0.0001)
+                    XCTAssertEqual(snapshot.window, window, accuracy: 0.0001)
+                    let first = max(0, endpoint - Int(window * 2))
+                    XCTAssertEqual(snapshot.segments.map(\.end).max() ?? .nan, snapshot.end, accuracy: 0.0001)
+                    XCTAssertLessThanOrEqual(snapshot.segments.map(\.start).min() ?? .infinity,
+                                             source.origin + Double(first) / 2)
+                    let ranges = snapshot.segments.map {
+                        "\($0.url.lastPathComponent): [\($0.start), \($0.end)) bytes=\($0.bytes)"
+                    }
+                    let interval = XCTAttachment(string:
+                        "window=\(window) markers=\(first)..<\(endpoint) " +
+                        "requested=[\(snapshot.end - snapshot.window), \(snapshot.requestedEnd)) " +
+                        "cutoff=\(snapshot.end)\n" + ranges.joined(separator: "\n"))
+                    interval.lifetime = .keepAlways; add(interval)
+                    let staging = root.appendingPathComponent("stage-" + UUID().uuidString)
+                    defer { try? FileManager.default.removeItem(at: staging) }
+                    let partial = staging.appendingPathComponent("clip.partial")
+                    let output = staging.appendingPathComponent("clip.mp4")
+                    do {
+                        try ProtectedFiles.directory(staging)
+                        // Feed during export; no unintended post-trigger frames may leak.
+                        async let exported: Void = ClipComposer().compose(snapshot, to: partial)
+                        try await h.feed(source, endpoint..<(endpoint + 1))
+                        let pinned = try await h.recorder.diagnostics()
+                        XCTAssertEqual(pinned.leaseCount, 1)
+                        XCTAssertTrue(snapshot.segments.allSatisfy { FileManager.default.fileExists(atPath: $0.url.path) })
+                        let inFlight = try await h.experiment.workingSet(stagingDirectory: staging)
+                        XCTAssertLessThan(inFlight.totalBytes, 192 * 1_024 * 1_024)
+                        try await exported
+                        let census = try await h.experiment.workingSet(stagingDirectory: staging)
+                        XCTAssertEqual(census.stagingBytes, ProtectedFiles.bytes(partial))
+                        XCTAssertGreaterThan(census.stagingBytes, 0)
+                        XCTAssertLessThan(census.captureBytes, 192 * 1_024 * 1_024)
+                        // Measured fixture bound includes export staging, not only index bytes.
+                        XCTAssertLessThan(census.totalBytes, 192 * 1_024 * 1_024)
+                        // Match ClipLibrary publication: the backend explicitly writes MP4
+                        // to .partial; consumers open the completed, renamed .mp4 file.
+                        try FileManager.default.moveItem(at: partial, to: output)
+                        XCTAssertFalse(FileManager.default.fileExists(atPath: partial.path))
+                        XCTAssertEqual(ProtectedFiles.bytes(output), census.stagingBytes)
+                        let report = XCTAttachment(string: "leased=\(pinned.leaseCount) " +
+                            "captureBytes=\(census.captureBytes) stagingBytes=\(census.stagingBytes)")
+                        report.lifetime = .keepAlways; add(report)
+                        try await assertMedia(output, markers: Array(first..<endpoint), sourceStart: Double(first) / 2,
+                                              duration: Double(endpoint - first) / 2, frameDuration: 0.5)
+                    } catch {
+                        // Preserve the exact leased source/export bytes before cleanup.
+                        for url in snapshot.segments.map(\.url) + [partial, output]
+                            where FileManager.default.fileExists(atPath: url.path) {
+                            let media = XCTAttachment(contentsOfFile: url)
+                            media.lifetime = .keepAlways; add(media)
+                        }
+                        await h.recorder.release(snapshot)
+                        throw error
+                    }
+                    await h.recorder.release(snapshot)
+                    let released = try await h.recorder.diagnostics()
+                    XCTAssertEqual(released.leaseCount, 0)
+                    try FileManager.default.removeItem(at: staging)
+                    XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+                    previous = endpoint + 1
+                }
+            } catch {
+                await h.stop()
+                throw error
             }
             await h.stop()
             let final = try await h.recorder.diagnostics()
@@ -255,9 +300,18 @@ final class ContinuousSnapshotTests: XCTestCase {
     }
 
     private func assertMedia(_ url: URL, markers: [Int], sourceStart: Double,
-                             duration: Double, frameDuration: Double) throws {
+                             duration: Double, frameDuration: Double) async throws {
         let asset = AVURLAsset(url: url)
-        let video = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
+        let videoTracks = try await asset.loadTracks(withMediaType: .video)
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        let actualDuration = try await asset.load(.duration)
+        let report = XCTAttachment(string: "export=\(url.lastPathComponent) bytes=\(ProtectedFiles.bytes(url)) " +
+            "videoTracks=\(videoTracks.count) audioTracks=\(audioTracks.count) " +
+            "duration=\(actualDuration.seconds) expectedDuration=\(duration) " +
+            "sourceStart=\(sourceStart) expectedMarkers=\(markers)")
+        report.lifetime = .keepAlways; add(report)
+        XCTAssertEqual(actualDuration.seconds, duration, accuracy: 0.06)
+        let video = try XCTUnwrap(videoTracks.first)
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: video, outputSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
@@ -278,7 +332,7 @@ final class ContinuousSnapshotTests: XCTestCase {
         for (index, time) in times.enumerated() {
             XCTAssertEqual(time, Double(index) * frameDuration, accuracy: 0.003)
         }
-        let audio = try XCTUnwrap(asset.tracks(withMediaType: .audio).first)
+        let audio = try XCTUnwrap(audioTracks.first)
         let audioReader = try AVAssetReader(asset: asset)
         let pcm = AVAssetReaderTrackOutput(track: audio, outputSettings: [
             AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: 16,
