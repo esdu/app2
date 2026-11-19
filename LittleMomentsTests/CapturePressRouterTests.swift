@@ -1,3 +1,4 @@
+import AVKit
 import XCTest
 import UIKit
 @testable import LittleMoments
@@ -90,22 +91,45 @@ import UIKit
                 canSave: blockedGate != 3, sessionRunning: blockedGate != 4))
         }
     }
-    func testHostPassesTouchesThroughAndRemovesDisabledInteraction() {
+    func testHostPassesTouchesThroughAndRemovesDisabledInteraction() throws {
         let view = CaptureButtonPassthroughView(frame: CGRect(x: 0, y: 0, width: 320, height: 640))
         XCTAssertTrue(view.isUserInteractionEnabled)
         XCTAssertFalse(view.point(inside: CGPoint(x: 100, y: 100), with: nil))
         if #available(iOS 17.2, *) {
+            let unrelatedInteraction = UIPointerInteraction(delegate: nil)
+            view.addInteraction(unrelatedInteraction)
+            // UIKit can install supporting interactions alongside the capture interaction.
+            // Assert the host's ownership by type and identity, not the view's total count.
+            let captureInteractions = {
+                view.interactions.compactMap { $0 as? AVCaptureEventInteraction }
+            }
             let coordinator = CaptureButtonHost.Coordinator()
             coordinator.update(view, enabled: true, canSave: { true }, save: {})
-            XCTAssertEqual(view.interactions.count, 1)
+            XCTAssertEqual(captureInteractions().count, 1)
+            let initialInteraction = try XCTUnwrap(captureInteractions().first)
+            XCTAssertTrue(initialInteraction.isEnabled)
+            XCTAssertTrue(initialInteraction.view === view)
+            XCTAssertNil(view.hitTest(CGPoint(x: 100, y: 100), with: nil))
             coordinator.update(view, enabled: true, canSave: { true }, save: {})
-            XCTAssertEqual(view.interactions.count, 1)
+            XCTAssertEqual(captureInteractions().count, 1)
+            XCTAssertTrue(captureInteractions().first === initialInteraction)
             coordinator.update(view, enabled: false, canSave: { false }, save: {})
-            XCTAssertTrue(view.interactions.isEmpty)
+            XCTAssertTrue(captureInteractions().isEmpty)
+            XCTAssertFalse(initialInteraction.isEnabled)
+            XCTAssertNil(initialInteraction.view)
+            XCTAssertTrue(view.interactions.contains { $0 === unrelatedInteraction })
             coordinator.update(view, enabled: true, canSave: { true }, save: {})
-            XCTAssertEqual(view.interactions.count, 1)
+            XCTAssertEqual(captureInteractions().count, 1)
+            let reenabledInteraction = try XCTUnwrap(captureInteractions().first)
+            XCTAssertFalse(reenabledInteraction === initialInteraction)
+            XCTAssertTrue(reenabledInteraction.isEnabled)
+            XCTAssertTrue(reenabledInteraction.view === view)
+            XCTAssertNil(view.hitTest(CGPoint(x: 100, y: 100), with: nil))
             coordinator.dismantle(view)
-            XCTAssertTrue(view.interactions.isEmpty)
+            XCTAssertTrue(captureInteractions().isEmpty)
+            XCTAssertFalse(reenabledInteraction.isEnabled)
+            XCTAssertNil(reenabledInteraction.view)
+            XCTAssertTrue(view.interactions.contains { $0 === unrelatedInteraction })
         }
     }
 }
