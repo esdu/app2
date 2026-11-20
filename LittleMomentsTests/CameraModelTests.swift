@@ -15,10 +15,12 @@ private final class ControlledCamera: CameraService {
     var onStart: (() -> Void)?
     var starts = 0
     var stops = 0
+    var statisticsOnStart: CameraStatistics?
     @MainActor func start(audio: Bool, front: Bool, duration: Double) async throws {
         starts += 1
         if suspendStart { await withCheckedContinuation { c in pendingStart = c; onStart?() } }
         if !permission { throw CameraError.permission }
+        if let statisticsOnStart { onStatistics?(statisticsOnStart) }
     }
     @MainActor func stop() async {
         stops += 1
@@ -90,7 +92,68 @@ private final class ControlledCamera: CameraService {
     }
     func testSaveFailureIsVisible() async {
         let camera = ControlledCamera(); let model = makeModel(camera)
-        model.start(); await waitUntil { !model.transitioning }; model.save(); await waitUntil { !model.saving }
+        model.start(); await waitUntil { !model.transitioning }
+        camera.onStatistics?(CameraStatistics(seconds: 2, bytes: 100))
+        await waitUntil { model.canSave }
+        model.save(); await waitUntil { !model.saving }
         XCTAssertFalse(model.saving); XCTAssertNotNil(model.message)
+    }
+    func testLateInterruptionCannotReplaceStoppedStateOrActionableError() async {
+        let camera = ControlledCamera(); let model = makeModel(camera)
+        model.start(); await waitUntil { !model.transitioning }
+        model.stop(); await waitUntil { !model.transitioning }
+        model.message = "Keep this actionable error"
+        camera.onInterruption?("Late interruption")
+        // Statistics provide an observable fence after the queued callbacks.
+        camera.onStatistics?(CameraStatistics(seconds: 2, bytes: 321))
+        await waitUntil { model.bytes == 321 }
+        XCTAssertEqual(model.phase, .stopped)
+        XCTAssertEqual(model.message, "Keep this actionable error")
+        XCTAssertEqual(model.seconds, 0)
+        XCTAssertFalse(model.canSave)
+    }
+    func testNewCaptureWaitsForFreshStatisticsEvenIfServiceDoesNotPublishOnStop() async {
+        let camera = ControlledCamera(); let model = makeModel(camera)
+        model.start(); await waitUntil { !model.transitioning }
+        camera.onStatistics?(CameraStatistics(seconds: 2, bytes: 100))
+        await waitUntil { model.canSave }
+        model.stop(); await waitUntil { !model.transitioning }
+        XCTAssertEqual(model.seconds, 0)
+        model.start(); await waitUntil { !model.transitioning }
+        XCTAssertEqual(model.phase, .buffering)
+        XCTAssertFalse(model.canSave)
+        camera.onStatistics?(CameraStatistics(seconds: 1, bytes: 50))
+        await waitUntil { model.canSave }
+        XCTAssertEqual(model.seconds, 1)
+    }
+    func testQueuedCallbacksFromStoppedSessionCannotAffectNextStart() async {
+        let camera = ControlledCamera(); let model = makeModel(camera)
+        model.start(); await waitUntil { !model.transitioning }
+        model.stop(); await waitUntil { !model.transitioning }
+        // Both deliveries are queued behind this MainActor turn. Starting again
+        // before it yields must not make those older callbacks current.
+        camera.onStatistics?(CameraStatistics(seconds: 10, bytes: 100))
+        camera.onInterruption?("Previous session interruption")
+        model.start()
+        await waitUntil { !model.transitioning }
+        XCTAssertEqual(model.phase, .buffering)
+        XCTAssertEqual(model.seconds, 0)
+        XCTAssertFalse(model.canSave)
+        XCTAssertNil(model.message)
+        camera.onStatistics?(CameraStatistics(seconds: 1, bytes: 50))
+        await waitUntil { model.canSave }
+        XCTAssertEqual(model.bytes, 50)
+    }
+    func testStatisticsPublishedDuringStartBelongToNewGeneration() async {
+        let camera = ControlledCamera(); let model = makeModel(camera)
+        camera.statisticsOnStart = CameraStatistics(seconds: 2, bytes: 100)
+        model.start(); await waitUntil { model.canSave }
+        XCTAssertEqual(model.seconds, 2)
+        XCTAssertEqual(model.bytes, 100)
+        model.stop(); await waitUntil { !model.transitioning }
+        camera.statisticsOnStart = CameraStatistics(seconds: 1, bytes: 50)
+        model.start(); await waitUntil { model.canSave }
+        XCTAssertEqual(model.seconds, 1)
+        XCTAssertEqual(model.bytes, 50)
     }
 }

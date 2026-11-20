@@ -25,12 +25,13 @@ jobs:
         run: |
           set -o pipefail
           python3 scripts/validate_privacy_manifest.py 2>&1 | tee artifacts/privacy-source.log
-      - name: Select and boot an available iPhone
+      - name: Select an available iPhone
         run: |
           SIMULATOR_ID=$(python3 scripts/select_simulator.py)
           echo "SIMULATOR_ID=$SIMULATOR_ID" >> "$GITHUB_ENV"
-          xcrun simctl boot "$SIMULATOR_ID" || test "$(xcrun simctl list devices booted -j | python3 -c 'import json,sys; print(any(d["udid"] == sys.argv[1] for ds in json.load(sys.stdin)["devices"].values() for d in ds))' "$SIMULATOR_ID")" = True
-          xcrun simctl bootstatus "$SIMULATOR_ID" -b
+          xcrun simctl list devices available --json > artifacts/simulator-device.json
+      - name: Validate CI diagnostic tooling
+        run: python3 -m unittest discover -s scripts/tests -v
       - name: Resolve dependencies
         run: |
           set -o pipefail
@@ -44,10 +45,14 @@ jobs:
         run: |
           set -o pipefail
           python3 scripts/validate_privacy_manifest.py build/DerivedData/Build/Products/Debug-iphonesimulator/LittleMoments.app/PrivacyInfo.xcprivacy 2>&1 | tee artifacts/privacy-simulator.log
-      - name: Run all unit and UI tests
+      - name: Boot selected iPhone
         run: |
-          set -o pipefail
-          xcodebuild test-without-building -project LittleMoments.xcodeproj -scheme LittleMoments -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -derivedDataPath build/DerivedData -resultBundlePath artifacts/LittleMoments.xcresult -parallel-testing-enabled NO -test-timeouts-enabled YES -default-test-execution-time-allowance 120 -maximum-test-execution-time-allowance 180 CODE_SIGNING_ALLOWED=NO 2>&1 | tee artifacts/tests.log
+          xcrun simctl boot "$SIMULATOR_ID" || test "$(xcrun simctl list devices booted -j | python3 -c 'import json,sys; print(any(d["udid"] == sys.argv[1] for ds in json.load(sys.stdin)["devices"].values() for d in ds))' "$SIMULATOR_ID")" = True
+          xcrun simctl bootstatus "$SIMULATOR_ID" -b
+      - name: Run all unit and UI tests
+        run: python3 scripts/run_ci_tests.py ordinary
+      - name: Repeat focused recorder and lifecycle tests until first failure
+        run: python3 scripts/run_ci_tests.py stress --iterations 3
       - name: Archive unsigned iOS app and validate its privacy manifest
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
@@ -62,9 +67,14 @@ jobs:
             xcrun simctl io "$SIMULATOR_ID" screenshot artifacts/final-screen.png || true
             xcrun simctl spawn "$SIMULATOR_ID" log show --last 15m --style compact --predicate 'process == "LittleMoments"' > artifacts/simulator.log 2>&1 || true
           fi
-          if [ -d artifacts/LittleMoments.xcresult ]; then
-            xcrun xcresulttool export attachments --path artifacts/LittleMoments.xcresult --output-path artifacts/attachments || true
-          fi
+      - name: Summarize tests and export per-run crash diagnostics
+        if: always()
+        timeout-minutes: 6
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          mkdir -p artifacts
+          python3 scripts/summarize_ci.py 2>&1 | tee artifacts/diagnostic-summary.log
       - name: Upload test results and diagnostics
         uses: actions/upload-artifact@v4
         if: always()

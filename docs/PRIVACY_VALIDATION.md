@@ -2,13 +2,14 @@
 
 [Issue #1](https://github.com/esdu/app2/issues/1) identified three production `ProcessInfo.processInfo.systemUptime` calls without a corresponding privacy declaration. These calls measure elapsed time for the capture watchdog and storage-check intervals; the app does not transmit uptime or derived timing information.
 
-The bundled `PrivacyInfo.xcprivacy` declares:
+The current recorder consolidates elapsed-time access into one explicit uptime call. The bundled `PrivacyInfo.xcprivacy` declares:
 
 | Category | Approved reason | App use |
 | --- | --- | --- |
 | File Timestamp | `C617.1` | Metadata for the app's own buffer files and saved clips |
 | Disk Space | `E174.1` | Stop buffering when there is insufficient space for local files |
 | System Boot Time | `35F9.1` | Elapsed-time calculations for the watchdog and storage checks |
+| User Defaults | `CA92.1` | App-owned camera and post-roll preferences |
 
 Apple documents `systemUptime` and reason `35F9.1` in its [required-reason API category reference](https://developer.apple.com/documentation/bundleresources/app-privacy-configuration/nsprivacyaccessedapitypes/nsprivacyaccessedapitype). Apple's [required-reason API submission guidance](https://developer.apple.com/documentation/bundleresources/describing-use-of-required-reason-api) remains the authority for distribution requirements.
 
@@ -36,10 +37,10 @@ GitHub Actions checks the source manifest, the compiled simulator app, and this 
 
 ## Before distribution
 
-Generate a privacy report and validate the final **signed** distribution archive in Xcode Organizer using the intended Apple Developer team. Confirm the archived app includes all three declarations above and review any additional API usage introduced by future changes or dependencies. A successful unsigned archive and simulator CI do not perform App Store Connect's distribution validation. No signed validation or App Store submission has been performed in this workspace.
+Generate a privacy report and validate the final **signed** distribution archive in Xcode Organizer using the intended Apple Developer team. Confirm the archived app includes all four declarations above and review any additional API usage introduced by future changes or dependencies. A successful unsigned archive and simulator CI do not perform App Store Connect's distribution validation. No signed validation or App Store submission has been performed in this workspace.
 
-## Verified fix
+## Verified packaging
 
-[CI run 43955515633](https://github.com/esdu/app2/actions/runs/43955515633) passed on code commit `87bf16a26f6bcd5afea83464e036499eae8da447`: source validation, simulator app packaging, all 28 unit/integration and 5 UI tests, and unsigned generic-device Release archiving. The manifest inside the archived app matched the source and declared System Boot Time reason `35F9.1`. The downloaded artifact's archived manifest was also parsed and checked directly.
+[CI run 44572744682](https://github.com/esdu/app2/actions/runs/44572744682) passed on code `b48252b28e718d904c459721871097005a02dc01`: source, built simulator bundle and unsigned generic-device Release archive manifests all matched the reviewed source. That source contains File Timestamp `C617.1`, Disk Space `E174.1`, System Boot Time `35F9.1` and User Defaults `CA92.1`. CI reported the one current explicit uptime call covered. All 180 ordinary tests and three 22-test stress passes also passed.
 
-[Validation artifacts](https://github.com/esdu/app2/actions/runs/43955515633/artifacts/14272258787) include the archived manifest and all three privacy-check logs. Local validation rejected the original manifest, confirming the regression check catches the issue. Signed App Store distribution validation remains a separate pre-release step.
+[Validation artifact](https://github.com/esdu/app2/actions/runs/44572744682/artifacts/14557862286) includes the archived manifest and the three privacy-check logs. The earlier [issue #1 baseline](https://github.com/esdu/app2/actions/runs/43955515633) reproduced the missing uptime declaration and verified its original packaging fix. The scanner remains narrow; matching manifests does not establish comprehensive API compliance or signed App Store acceptance.

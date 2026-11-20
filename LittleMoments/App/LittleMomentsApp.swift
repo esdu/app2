@@ -11,12 +11,18 @@ import SwiftUI
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("UITestLibrary")
             try? FileManager.default.removeItem(at: root)
             let service = SyntheticCamera(denied: ProcessInfo.processInfo.arguments.contains("--deny-camera"))
-            _model = StateObject(wrappedValue: CameraModel(camera: service, library: ClipLibrary(directory: root), testing: true))
+            let thermal: ThermalLevel = ProcessInfo.processInfo.arguments.contains("--thermal-critical") ? .critical
+                : ProcessInfo.processInfo.arguments.contains("--thermal-serious") ? .serious : .nominal
+            _model = StateObject(wrappedValue: CameraModel(camera: service, library: ClipLibrary(directory: root), testing: true,
+                preferencesStore: UserDefaultsCameraPreferencesStore.forUITesting(arguments: ProcessInfo.processInfo.arguments),
+                thermalMonitor: MutableThermalMonitor(state: thermal)))
         } else {
-            _model = StateObject(wrappedValue: CameraModel(camera: CaptureEngine(), library: library))
+            _model = StateObject(wrappedValue: CameraModel(camera: CaptureEngine(), library: library,
+                preferencesStore: UserDefaultsCameraPreferencesStore(defaults: .standard), thermalMonitor: ProcessThermalMonitor()))
         }
         #else
-        _model = StateObject(wrappedValue: CameraModel(camera: CaptureEngine(), library: library))
+        _model = StateObject(wrappedValue: CameraModel(camera: CaptureEngine(), library: library,
+            preferencesStore: UserDefaultsCameraPreferencesStore(defaults: .standard), thermalMonitor: ProcessThermalMonitor()))
         #endif
     }
     var body: some Scene {

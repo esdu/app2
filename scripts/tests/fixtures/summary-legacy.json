@@ -1,0 +1,11 @@
+{
+  "_type": {"_name": "ActionsInvocationRecord"},
+  "metrics": {
+    "testsCount": {"_value": "5"},
+    "testsFailedCount": {"_value": "1"},
+    "testsSkippedCount": {"_value": "1"}
+  },
+  "issues": {"testFailureSummaries": {"_values": [
+    {"testCaseName": {"_value": "CameraModelTests.testStop()"}, "message": {"_value": "Stop completion timed out"}}
+  ]}}
+}

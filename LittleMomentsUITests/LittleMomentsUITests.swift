@@ -28,7 +28,13 @@ final class LittleMomentsUITests: XCTestCase {
                       "Control must be fully visible before tapping")
     }
     private func start() {
-        let button = app.buttons["bufferButton"]; reveal(button); button.tap()
+        let button = app.buttons["bufferButton"]; reveal(button)
+        // A paused label can appear before foreground activation and the previous
+        // stop have finished. A tap on a disabled control is silently ignored.
+        let ready = NSPredicate(format: "enabled == true AND label == %@", "Start Buffer")
+        expectation(for: ready, evaluatedWith: button)
+        waitForExpectations(timeout: 20)
+        button.tap()
         let active = NSPredicate(format: "label == %@", "Stop Buffer")
         expectation(for: active, evaluatedWith: button)
         waitForExpectations(timeout: 20)
@@ -51,15 +57,24 @@ final class LittleMomentsUITests: XCTestCase {
         launch(); start()
         let save = app.buttons["saveButton"]; reveal(save)
         XCTAssertTrue(save.isEnabled); save.tap()
-        XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 30))
-        XCTAssertTrue(app.alerts.staticTexts["Moment saved to your library."].exists)
-        app.alerts.buttons["OK"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["saveStatus"].waitForExistence(timeout: 30))
+        XCTAssertFalse(app.alerts.firstMatch.exists)
+        let savedOnce = NSPredicate(format: "enabled == true")
+        expectation(for: savedOnce, evaluatedWith: save); waitForExpectations(timeout: 30)
+        reveal(save); save.tap()
+        let libraryCount = app.buttons["libraryButton"]
+        let savedTwice = NSPredicate(format: "value == %@", "2 saved")
+        expectation(for: savedTwice, evaluatedWith: libraryCount); waitForExpectations(timeout: 30)
+        XCTAssertFalse(app.alerts.firstMatch.exists)
         let library = app.buttons["libraryButton"]
         for _ in 0..<5 { if library.isHittable { break }; app.swipeDown() }
         library.tap()
         XCTAssertTrue(app.buttons["clipRow"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons.matching(identifier: "clipRow").count, 2)
         app.buttons["clipRow"].firstMatch.tap()
         XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 10)); app.buttons["Done"].tap()
+        app.buttons["deleteClip"].firstMatch.tap(); app.buttons["Delete Moment"].tap()
+        XCTAssertEqual(app.buttons.matching(identifier: "clipRow").count, 1)
         app.buttons["deleteClip"].firstMatch.tap(); app.buttons["Delete Moment"].tap()
         XCTAssertFalse(app.buttons["clipRow"].exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()

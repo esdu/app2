@@ -1,5 +1,6 @@
 import AVFoundation
 import UIKit
+import os
 
 /// Mutable capture state is confined to queue; callbacks are installed once before use.
 final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSampleBufferDelegate,
@@ -9,31 +10,22 @@ final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSamp
     var onStatistics: ((CameraStatistics) -> Void)?
     var onInterruption: ((String) -> Void)?
     private let queue = DispatchQueue(label: "LittleMoments.capture", qos: .userInitiated)
-    private let directory: URL
-    private var index = SegmentIndex()
-    private var writer: SegmentWriter?
-    private var running = false
-    private var audioEnabled = false
-    private var pending = 0
-    private var generation = UUID()
+    private lazy var recorder = RollingRecorder(queue: queue)
     private var startRequest = UUID()
-    private var freezing = false
-    private var snapshotContinuation: CheckedContinuation<BufferSnapshot, Error>?
-    private var snapshotEnd: Double = 0
-    private var lastTimestamp: Double = 0
-    private var lastReport: Double = 0
-    private var health: CaptureWatchdog?
     private var healthTimer: DispatchSourceTimer?
     private var observers: [NSObjectProtocol] = []
-    private let diskLimit: Int64 = 192 * 1_024 * 1_024
+    private var deliveryValidator: CaptureDeliveryValidator?
+    private var droppedVideoFrames = 0
+    private let configurationLog = Logger(subsystem: "org.littlemoments", category: "CaptureConfiguration")
 
     override init() {
-        directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("RollingSegments", isDirectory: true)
         super.init()
-        // This directory contains only expendable buffer files, never saved clips.
-        try? FileManager.default.removeItem(at: directory)
-        try? ProtectedFiles.directory(directory)
+        recorder.onStatistics = { [weak self] in self?.onStatistics?($0) }
+        recorder.onFailure = { [weak self] error in
+            guard let self else { return }
+            self.stopOnQueue(snapshotError: error)
+            self.onInterruption?(error.localizedDescription)
+        }
         for name in [AVCaptureSession.wasInterruptedNotification, AVCaptureSession.runtimeErrorNotification,
                      AVAudioSession.interruptionNotification, AVAudioSession.mediaServicesWereResetNotification] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: name == AVAudioSession.interruptionNotification || name == AVAudioSession.mediaServicesWereResetNotification ? AVAudioSession.sharedInstance() : capture, queue: nil) { [weak self] _ in
@@ -59,20 +51,14 @@ final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSamp
                 do {
                     guard request == startRequest else { throw CameraError.writer("Camera startup was canceled. Tap Start Buffer to restart.") }
                     stopOnQueue(invalidateStart: false)
-                    index.window = duration
-                    audioEnabled = audio
                     try configure(front: front, audio: audio)
                     capture.startRunning()
                     guard capture.isRunning else { throw CameraError.unavailable }
-                    running = true
-                    health = CaptureWatchdog(startedAt: ProcessInfo.processInfo.systemUptime)
+                    recorder.start(audio: audio, duration: duration)
                     let timer = DispatchSource.makeTimerSource(queue: queue)
                     timer.schedule(deadline: .now() + 1, repeating: 1)
                     timer.setEventHandler { [weak self] in
-                        guard let self, self.running,
-                              self.health?.timedOut(at: ProcessInfo.processInfo.systemUptime) == true else { return }
-                        self.stopOnQueue()
-                        self.onInterruption?("Camera frames stopped arriving. Tap Start Buffer to retry.")
+                        self?.recorder.pollHealth()
                     }
                     healthTimer = timer
                     timer.resume()
@@ -86,21 +72,47 @@ final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSamp
         defer { capture.commitConfiguration() }
         capture.inputs.forEach { capture.removeInput($0) }
         capture.outputs.forEach { capture.removeOutput($0) }
-        capture.sessionPreset = .hd1280x720
+        guard capture.canSetSessionPreset(.inputPriority) else {
+            throw CameraError.writer("This camera cannot use an explicitly selected capture format. Switch cameras and retry.")
+        }
+        capture.sessionPreset = .inputPriority
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video,
                                                    position: front ? .front : .back) else { throw CameraError.unavailable }
         let input = try AVCaptureDeviceInput(device: device)
         guard capture.canAddInput(input) else { throw CameraError.unavailable }
         capture.addInput(input)
+        let candidates = device.formats.enumerated().map { index, format in
+            let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            return CaptureFormatPolicy.Candidate(index: index, width: dimensions.width, height: dimensions.height,
+                rates: format.videoSupportedFrameRateRanges.map { .init(minimum: $0.minFrameRate, maximum: $0.maxFrameRate) })
+        }
+        let selected = try CaptureFormatPolicy.select(candidates)
+        try device.lockForConfiguration()
+        do {
+            defer { device.unlockForConfiguration() }
+            device.activeFormat = device.formats[selected.index]
+            device.activeVideoMinFrameDuration = CaptureFormatPolicy.frameDuration
+            device.activeVideoMaxFrameDuration = CaptureFormatPolicy.frameDuration
+            guard CMTimeCompare(device.activeVideoMinFrameDuration, CaptureFormatPolicy.frameDuration) == 0,
+                  CMTimeCompare(device.activeVideoMaxFrameDuration, CaptureFormatPolicy.frameDuration) == 0 else {
+                throw CameraError.writer("This camera could not apply a fixed 30 fps configuration. Switch cameras and retry.")
+            }
+        }
         let output = AVCaptureVideoDataOutput()
         output.alwaysDiscardsLateVideoFrames = true
-        output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         output.setSampleBufferDelegate(self, queue: queue)
         guard capture.canAddOutput(output) else { throw CameraError.unavailable }
         capture.addOutput(output)
-        if let connection = output.connection(with: .video), connection.isVideoRotationAngleSupported(90) {
-            connection.videoRotationAngle = 90
+        let pixelFormat = try CaptureFormatPolicy.pixelFormat(supported: output.availableVideoPixelFormatTypes)
+        output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: pixelFormat]
+        guard let connection = output.connection(with: .video), connection.isVideoRotationAngleSupported(90) else {
+            throw CameraError.writer("This camera cannot deliver the required portrait orientation. Switch cameras and retry.")
         }
+        connection.videoRotationAngle = 90
+        deliveryValidator = CaptureDeliveryValidator(width: selected.height, height: selected.width, pixelFormat: pixelFormat)
+        let side = front ? "front" : "rear"
+        let formatName = CaptureFormatPolicy.name(pixelFormat)
+        configurationLog.notice("Selected \(side, privacy: .public) \(selected.width, privacy: .public)×\(selected.height, privacy: .public) at fixed 30 fps; portrait delivery \(selected.height, privacy: .public)×\(selected.width, privacy: .public), \(formatName, privacy: .public). Smaller dimensions or BGRA indicate supported fallback.")
         if audio {
             guard let mic = AVCaptureDevice.default(for: .audio) else { throw CameraError.unavailable }
             let micInput = try AVCaptureDeviceInput(device: mic)
@@ -115,93 +127,44 @@ final class CaptureEngine: NSObject, CameraService, AVCaptureVideoDataOutputSamp
     func stop() async { await withCheckedContinuation { c in queue.async { self.stopOnQueue(); c.resume() } } }
     private func stopOnQueue(invalidateStart: Bool = true, snapshotError: Error = CameraError.empty) {
         if invalidateStart { startRequest = UUID() }
-        running = false
-        healthTimer?.cancel(); healthTimer = nil; health = nil
+        healthTimer?.cancel(); healthTimer = nil
         capture.stopRunning()
-        writer?.cancel(); writer = nil
-        generation = UUID(); pending = 0
-        lastTimestamp = 0; lastReport = 0
-        if let c = snapshotContinuation { snapshotContinuation = nil; c.resume(throwing: snapshotError) }
-        freezing = false
-        ProtectedFiles.remove(index.clearUnpinned().map(\.url))
-        onStatistics?(CameraStatistics(seconds: 0, bytes: index.bytes))
+        deliveryValidator = nil
+        droppedVideoFrames = 0
+        recorder.stop(snapshotError: snapshotError)
     }
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        guard running, !freezing else { return }
-        do {
-            let isAudio = output is AVCaptureAudioDataOutput
-            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            guard pts.isNumeric else { return }
-            let hostTime = ProcessInfo.processInfo.systemUptime
-            if !isAudio {
-                health?.sawVideo(at: hostTime)
-                lastTimestamp = pts.seconds
-                if let current = writer, pts.seconds - current.start.seconds >= 2 {
-                    writer = nil
-                    finish(current)
+        let isAudio = output is AVCaptureAudioDataOutput
+        if !isAudio {
+            do {
+                guard deliveryValidator != nil else { return }
+                try deliveryValidator?.validate(sampleBuffer)
+                if let state = deliveryValidator, state.frames == 1 || state.frames % 150 == 0 {
+                    let fps = state.observedFPS.map { String(format: "%.2f", $0) } ?? "pending"
+                    let format = CaptureFormatPolicy.name(state.pixelFormat)
+                    configurationLog.notice("Delivered \(state.width, privacy: .public)×\(state.height, privacy: .public), \(format, privacy: .public); frames \(state.frames, privacy: .public), observed fps \(fps, privacy: .public), delegate drops \(self.droppedVideoFrames, privacy: .public). First frame has no measured cadence.")
                 }
-                guard pending < 3 else { throw CameraError.writer("Video encoding is too slow. Buffering stopped.") }
-                if writer == nil { writer = try SegmentWriter(sample: sampleBuffer, audioEnabled: audioEnabled, directory: directory) }
-            }
-            try writer?.append(sampleBuffer, isAudio: isAudio)
-            if hostTime - lastReport >= 0.25 {
-                lastReport = hostTime
-                let diskBytes = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-                    .reduce(Int64(0)) { $0 + ProtectedFiles.bytes($1) }
-                let capacity = try directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-                    .volumeAvailableCapacityForImportantUsage ?? Int64.max
-                guard diskBytes < diskLimit, capacity > 64 * 1_024 * 1_024 else { throw CameraError.storage }
-                onStatistics?(CameraStatistics(seconds: min(index.window, index.duration + (writer.map { $0.end.seconds - $0.start.seconds } ?? 0)), bytes: diskBytes))
-            }
-        } catch { stopOnQueue(); onInterruption?(error.localizedDescription) }
-    }
-    private func finish(_ closing: SegmentWriter) {
-        pending += 1
-        let epoch = generation
-        closing.finish { [weak self] result in
-            guard let self else { return }
-            self.queue.async {
-                guard epoch == self.generation else {
-                    if case .success(let segment) = result { ProtectedFiles.remove([segment.url]) }; return
-                }
-                self.pending -= 1
-                switch result {
-                case .success(let segment):
-                    self.index.insert(segment)
-                    // During save, pin before pruning any boundary segments.
-                    if !self.freezing { ProtectedFiles.remove(self.index.prune(now: self.lastTimestamp).map(\.url)) }
-                    self.completeSnapshotIfReady()
-                case .failure(let error): self.stopOnQueue(snapshotError: error); self.onInterruption?(error.localizedDescription)
-                }
+            } catch {
+                configurationLog.error("Video configuration validation failed: \(error.localizedDescription, privacy: .public)")
+                stopOnQueue(snapshotError: error)
+                onInterruption?(error.localizedDescription)
+                return
             }
         }
+        recorder.ingest(sampleBuffer, isAudio: isAudio)
     }
-    func snapshot() async throws -> BufferSnapshot {
-        try await withCheckedThrowingContinuation { c in
-            queue.async { [self] in
-                guard running, !freezing else { c.resume(throwing: CameraError.empty); return }
-                freezing = true
-                snapshotContinuation = c
-                snapshotEnd = writer?.end.seconds ?? lastTimestamp
-                if let current = writer { writer = nil; finish(current) }
-                completeSnapshotIfReady()
-            }
+    func captureOutput(_ output: AVCaptureOutput, didDrop sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
+        guard output is AVCaptureVideoDataOutput, deliveryValidator != nil else { return }
+        droppedVideoFrames += 1
+        if droppedVideoFrames == 1 || droppedVideoFrames % 30 == 0 {
+            configurationLog.notice("Delegate dropped video frames: \(self.droppedVideoFrames, privacy: .public)")
         }
     }
-    private func completeSnapshotIfReady() {
-        guard freezing, pending == 0, let c = snapshotContinuation else { return }
-        snapshotContinuation = nil
-        let (token, selection) = index.pin(endingAt: snapshotEnd)
-        freezing = false
-        guard !selection.isEmpty else { index.release(token); c.resume(throwing: CameraError.empty); return }
-        c.resume(returning: BufferSnapshot(token: token, segments: selection, end: snapshotEnd, window: index.window))
+    func snapshot() async throws -> BufferSnapshot { try await recorder.snapshot() }
+    func snapshot(postRoll: Double, onProgress: @escaping (Double) -> Void) async throws -> BufferSnapshot {
+        try await recorder.snapshot(postRoll: postRoll, onProgress: onProgress)
     }
-    func release(_ snapshot: BufferSnapshot) async {
-        await withCheckedContinuation { c in queue.async { [self] in
-            index.release(snapshot.token)
-            let removed = running ? index.prune(now: lastTimestamp) : index.clearUnpinned()
-            ProtectedFiles.remove(removed.map(\.url)); c.resume()
-        } }
-    }
+    func release(_ snapshot: BufferSnapshot) async { await recorder.release(snapshot) }
 }
