@@ -2,7 +2,7 @@
 
 [![iOS CI](https://github.com/esdu/app2/actions/workflows/ios-ci.yml/badge.svg)](https://github.com/esdu/app2/actions/workflows/ios-ci.yml)
 
-Verified integration (`5824f7f`): **159 unit/integration tests and 11 UI tests passed**, plus three focused stress passes of 20 tests each, with zero failures or skips. [Successful run and artifacts](https://github.com/esdu/app2/actions/runs/44555961043) · [Validation details](docs/VALIDATION.md) · [Issue acceptance ledger](docs/ISSUE_ACCEPTANCE_LEDGER.md). Physical iPhone and signed distribution validation remain outstanding.
+Verified integration (`b48252b`): **169 unit/integration tests and 11 UI tests passed**, plus three focused stress passes of 22 tests each, with zero failures or skips. [Successful run and artifacts](https://github.com/esdu/app2/actions/runs/44572744682) · [Validation details](docs/VALIDATION.md) · [Issue acceptance ledger](docs/ISSUE_ACCEPTANCE_LEDGER.md). Physical iPhone and signed distribution validation remain outstanding.
 
 A local-first iPhone camera for keeping the moment just before you tap **SAVE MOMENT**. Requires iOS 17+. Start a short rolling buffer, stay present, and save a spontaneous moment to a private local clip library.
 
